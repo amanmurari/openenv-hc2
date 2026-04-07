@@ -1,0 +1,39 @@
+[build-system]
+requires = ["setuptools>=77", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "openenv-traffic-control"
+version = "1.0.0"
+description = "Autonomous Traffic Control RL Environment - OpenEnv Hackathon"
+readme = "README.md"
+requires-python = ">=3.10"
+license = "MIT"
+dependencies = [
+    "openenv-core[core]>=0.2.2",
+    "openai>=1.0.0",
+    "gradio>=4.0.0",
+    "numpy>=1.24.0",
+    "python-dotenv>=1.0.0",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=7.4.0",
+    "httpx>=0.25.0",
+    "pytest-asyncio>=0.23.0",
+]
+
+[project.scripts]
+server = "traffic_control.server.app:main"
+
+# ── Setuptools config ──────────────────────────────────────────────────────
+# pyproject.toml lives in  openv/traffic_control/
+# The Python package  traffic_control/  lives one level UP at  openv/
+# so we point package-dir to the parent.
+[tool.setuptools]
+include-package-data = true
+
+[tool.setuptools.packages.find]
+where = [".."]
+include = ["traffic_control*"]

@@ -1,0 +1,147 @@
+id: traffic-control
+name: Autonomous Traffic Control Environment
+version: "1.0.0"
+description: >
+  A 4-way intersection RL environment where an AI agent controls traffic lights
+  to maximise vehicle throughput and prioritise emergency vehicles.
+  Compliant with the OpenEnv reset / step / state API specification.
+
+author: OpenEnv Hackathon Submission
+tags:
+  - reinforcement-learning
+  - traffic-control
+  - emergency-vehicles
+  - autonomous-systems
+  - openenv
+
+# ---------------------------------------------------------------------------
+# Observation space
+# ---------------------------------------------------------------------------
+observation_space:
+  type: object
+  properties:
+    current_phase:
+      type: integer
+      enum: [0, 1, 2, 3, 4]
+      description: >
+        Active traffic-light phase.
+        0=NS_GREEN | 1=EW_GREEN | 2=ALL_RED | 3=NS_YELLOW | 4=EW_YELLOW
+    time_in_phase:
+      type: integer
+      minimum: 0
+      description: Steps elapsed since the last phase change.
+    queue_lengths:
+      type: array
+      items: { type: integer, minimum: 0 }
+      minItems: 4
+      maxItems: 4
+      description: "Regular vehicle queue depth per approach [N, S, E, W]."
+    emergency_queue:
+      type: array
+      items: { type: integer, minimum: 0 }
+      minItems: 4
+      maxItems: 4
+      description: "Emergency vehicle count per approach [N, S, E, W]."
+    emergency_urgency:
+      type: array
+      items: { type: integer, minimum: 0, maximum: 10 }
+      minItems: 4
+      maxItems: 4
+      description: "Max urgency of waiting emergency vehicles per approach (0 = none)."
+    vehicles_passed:
+      type: integer
+      minimum: 0
+      description: Regular vehicles that cleared the intersection this step.
+    emergency_passed:
+      type: integer
+      minimum: 0
+      description: Emergency vehicles that cleared the intersection this step.
+    total_waiting_time:
+      type: number
+      description: Sum of per-vehicle waiting increments accumulated this step.
+    collision:
+      type: boolean
+      description: True if a gridlock-induced collision occurred this step.
+    reward:
+      type: number
+      description: Step reward computed by the environment.
+    done:
+      type: boolean
+      description: True when the episode has ended.
+    metadata:
+      type: object
+      description: Auxiliary info (step_count, task_id, …).
+
+# ---------------------------------------------------------------------------
+# Action space
+# ---------------------------------------------------------------------------
+action_space:
+  type: object
+  properties:
+    light_phase:
+      type: integer
+      enum: [0, 1, 2]
+      description: >
+        Desired traffic-light phase.
+        0=NS_GREEN | 1=EW_GREEN | 2=ALL_RED
+
+# ---------------------------------------------------------------------------
+# Tasks
+# ---------------------------------------------------------------------------
+tasks:
+  - id: basic_flow
+    name: Basic Traffic Flow Management
+    difficulty: easy
+    description: >
+      Optimise vehicle throughput at a 4-way intersection with moderate,
+      consistent traffic and no emergency vehicles.
+    max_steps: 200
+    grading:
+      throughput_weight: 0.60
+      efficiency_weight: 0.40
+      target_throughput_per_step: 1.8
+
+  - id: emergency_priority
+    name: Emergency Vehicle Prioritisation
+    difficulty: medium
+    description: >
+      Manage mixed traffic while prioritising occasional emergency vehicles
+      that arrive from random directions with high urgency.
+    max_steps: 300
+    grading:
+      throughput_weight:  0.30
+      emergency_weight:   0.35
+      delay_weight:       0.20
+      efficiency_weight:  0.15
+      target_emergency_delay_steps: 3
+
+  - id: dynamic_scenarios
+    name: Dynamic and Complex Scenarios
+    difficulty: hard
+    description: >
+      Handle high traffic density, traffic-surge events, and multiple
+      simultaneous emergency vehicles. Robustness and collision avoidance
+      are critical evaluation criteria.
+    max_steps: 400
+    grading:
+      throughput_weight:    0.25
+      emergency_weight:     0.30
+      delay_weight:         0.20
+      efficiency_weight:    0.15
+      adaptability_weight:  0.10
+
+# ---------------------------------------------------------------------------
+# Server
+# ---------------------------------------------------------------------------
+server:
+  port: 8000
+  module: traffic_control.server.app
+  app: app
+  workers: 2
+
+# ---------------------------------------------------------------------------
+# Docker
+# ---------------------------------------------------------------------------
+docker:
+  base_image: python:3.11-slim
+  exposed_port: 8000
