@@ -183,15 +183,24 @@ except ImportError:
 # Entry point
 # ---------------------------------------------------------------------------
 
-def main(host: str = "0.0.0.0", port: int = 8000) -> None:
-    """Start uvicorn server."""
+def main() -> None:
+    """Entry point: start uvicorn server. Reads --host and --port from CLI args."""
+    import argparse
     import uvicorn
-    uvicorn.run(app, host=host, port=port)
+
+    parser = argparse.ArgumentParser(description="Traffic Control OpenEnv Server")
+    parser.add_argument("--host", default=os.environ.get("HOST", "0.0.0.0"))
+    parser.add_argument("--port", type=int, default=int(os.environ.get("PORT", "8000")))
+    parser.add_argument("--workers", type=int, default=1)
+    args, _ = parser.parse_known_args()  # ignore unknown args from uv
+
+    uvicorn.run(
+        "traffic_control.server.app:app",
+        host=args.host,
+        port=args.port,
+        workers=args.workers,
+    )
 
 
 if __name__ == "__main__":
-    import argparse
-    parser = argparse.ArgumentParser()
-    parser.add_argument("--port", type=int, default=8000)
-    args = parser.parse_args()
-    main(port=args.port)
+    main()
