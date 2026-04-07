@@ -18,6 +18,7 @@ import os
 import sys
 import json
 import textwrap
+import requests as _http
 
 # Allow running directly from traffic_control/ OR from its parent
 _HERE = os.path.dirname(os.path.abspath(__file__))
@@ -148,6 +149,35 @@ def get_llm_action(obs: TrafficObservation) -> TrafficAction:
         return _rule_based_action(obs)
 
 # ---------------------------------------------------------------------------
+# Grade fetcher  (calls /grade after episode ends)
+# ---------------------------------------------------------------------------
+
+def _fetch_score(task_id: str, state_payload: dict) -> float:
+    """Call the /grade endpoint and return a clamped (0.001, 0.999) score."""
+    try:
+        r = _http.post(
+            f"{SERVER_URL}/grade",
+            json={
+                "task_id":               task_id,
+                "total_vehicles_passed": state_payload.get("total_vehicles_passed", 0),
+                "total_emergency_passed":state_payload.get("total_emergency_passed", 0),
+                "total_waiting_time":    state_payload.get("total_waiting_time", 0.0),
+                "total_collisions":      state_payload.get("total_collisions", 0),
+                "total_emergency_delay": state_payload.get("total_emergency_delay", 0.0),
+                "total_phase_changes":   state_payload.get("total_phase_changes", 0),
+                "step_count":            max(state_payload.get("step_count", 1), 1),
+            },
+            timeout=10,
+        )
+        if r.status_code == 200:
+            raw = float(r.json().get("score", 0.5))
+            return max(0.001, min(0.999, raw))
+    except Exception:
+        pass
+    return 0.5  # safe fallback
+
+
+# ---------------------------------------------------------------------------
 # Task runner
 # ---------------------------------------------------------------------------
 
@@ -199,9 +229,19 @@ def run_task(task_id: str) -> None:
         print(f"[STEP] step=0 action=none reward=0.00 done=true error={exc}")
         success = False
 
-    success_str  = "true" if success else "false"
-    rewards_str  = ",".join(f"{r:.2f}" for r in rewards) if rewards else "0.00"
-    print(f"[END] success={success_str} steps={len(rewards)} rewards={rewards_str}")
+    success_str = "true" if success else "false"
+    rewards_str = ",".join(f"{r:.2f}" for r in rewards) if rewards else "0.00"
+
+    # Fetch final grade score from /grade endpoint
+    score = 0.5
+    try:
+        state_resp = _http.get(f"{SERVER_URL}/state", timeout=10)
+        if state_resp.status_code == 200:
+            score = _fetch_score(task_id, state_resp.json())
+    except Exception:
+        pass
+
+    print(f"[END] success={success_str} steps={len(rewards)} score={score:.3f} rewards={rewards_str}")
 
 
 # ---------------------------------------------------------------------------

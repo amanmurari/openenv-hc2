@@ -18,9 +18,14 @@ from typing import Any, Dict
 @dataclass
 class GradeResult:
     """Standardised grading result."""
-    score: float                        # 0.0 – 1.0
+    score: float                        # strictly in (0.001, 0.999)
     metrics: Dict[str, Any] = field(default_factory=dict)
     feedback: str = ""
+
+
+def _clamp(score: float) -> float:
+    """Ensure score is strictly between 0 and 1 (never 0.0 or 1.0 exactly)."""
+    return round(max(0.001, min(0.999, score)), 4)
 
 
 # ---------------------------------------------------------------------------
@@ -46,7 +51,7 @@ def grade(
     }
     if task_id not in graders:
         return GradeResult(
-            score=0.0,
+            score=0.001,
             feedback=f"Unknown task_id '{task_id}'. Valid: {list(graders.keys())}",
         )
     return graders[task_id](
@@ -84,7 +89,7 @@ def _grade_basic_flow(
     score = max(0.0, raw - collision_penalty)
 
     return GradeResult(
-        score=round(score, 4),
+        score=_clamp(raw - collision_penalty),
         metrics={
             "throughput_per_step": round(throughput_per_step, 3),
             "throughput_score":    round(throughput_score,    4),
@@ -144,7 +149,7 @@ def _grade_emergency_priority(
     )
 
     return GradeResult(
-        score=round(score, 4),
+        score=_clamp(raw - collision_penalty),
         metrics={
             "throughput_per_step":       round(throughput_per_step, 3),
             "throughput_score":          round(throughput_score,    4),
@@ -201,7 +206,7 @@ def _grade_dynamic_scenarios(
     score = max(0.0, raw - collision_penalty)
 
     return GradeResult(
-        score=round(score, 4),
+        score=_clamp(raw - collision_penalty),
         metrics={
             "throughput_per_step":   round(throughput_per_step, 3),
             "throughput_score":      round(throughput_score,    4),
