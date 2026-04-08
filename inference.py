@@ -1,26 +1,27 @@
 """
 Inference Script — Autonomous Traffic Control OpenEnv Environment
 =================================================================
-Mandatory env variables:
-    API_BASE_URL   LLM endpoint  (default: https://api.openai.com/v1)
-    MODEL_NAME     Model to use  (default: gpt-4.1-mini)
-    API_KEY        Your LLM API key / LiteLLM Proxy Key ← REQUIRED (can fallback to HF_TOKEN)
+Mandatory env variables (injected by validator):
+    API_BASE_URL   LLM proxy endpoint
+    MODEL_NAME     Model identifier
+    API_KEY        LiteLLM proxy key  (fallback: HF_TOKEN)
 
 Optional:
     SERVER_URL     Running env server (default: http://localhost:8000)
 
 Run:
-    API_KEY=<key> python inference.py
-    API_KEY=<key> SERVER_URL=http://localhost:8000 python inference.py
+    API_BASE_URL=<url> API_KEY=<key> python inference.py
 """
 
 import os
+import re
 import sys
 import json
 import textwrap
 import requests as _http
+from typing import List, Optional
 
-# Allow running directly from traffic_control/ OR from its parent
+# Allow running from repo root or from traffic_control/ subdirectory
 _HERE = os.path.dirname(os.path.abspath(__file__))
 _PARENT = os.path.dirname(_HERE)
 for _p in (_HERE, _PARENT):
@@ -35,32 +36,25 @@ except ImportError:
 
 from openai import OpenAI
 
-# Import from within the self-contained package
 try:
     from traffic_control.client import TrafficControlEnv
     from traffic_control.models import TrafficAction, TrafficObservation
 except ImportError:
-    from client import TrafficControlEnv
-    from models import TrafficAction, TrafficObservation
+    from client import TrafficControlEnv  # type: ignore
+    from models import TrafficAction, TrafficObservation  # type: ignore
 
 # ---------------------------------------------------------------------------
-# Configuration
+# Configuration — read from env at import time (matches sample script pattern)
 # ---------------------------------------------------------------------------
 
-API_BASE_URL = os.getenv("API_BASE_URL", "https://api.openai.com/v1")
-MODEL_NAME   = os.getenv("MODEL_NAME", "gpt-4.1-mini")
-
-# The testing environment proxies use "API_KEY", but the pre-validation wants "HF_TOKEN"
-HF_TOKEN = os.getenv("HF_TOKEN")
-API_KEY  = os.getenv("API_KEY", HF_TOKEN)
-
-SERVER_URL = os.getenv("SERVER_URL", "http://localhost:8000")
+API_BASE_URL = os.environ.get("API_BASE_URL", "https://api.openai.com/v1")
+MODEL_NAME   = os.environ.get("MODEL_NAME", "gpt-4.1-mini")
+API_KEY      = os.environ.get("API_KEY") or os.environ.get("HF_TOKEN", "")
+SERVER_URL   = os.environ.get("SERVER_URL", "http://localhost:8000")
 
 SEED        = 42
-MAX_TOKENS  = 32
+MAX_TOKENS  = 64
 TEMPERATURE = 0.0
-
-# Client instantiation moved inside the function to ensure it picks up dynamically injected envs
 
 # ---------------------------------------------------------------------------
 # Prompts
@@ -79,7 +73,7 @@ SYSTEM_PROMPT = textwrap.dedent("""
     STRATEGY:
       1. If any emergency vehicles are waiting, switch to their direction immediately.
       2. Otherwise, switch to the direction with the most queued vehicles.
-      3. Avoid changing phase too frequently (wait ≥ 4 steps per phase).
+      3. Avoid changing phase too frequently (wait at least 4 steps per phase).
 
     OUTPUT: Reply with exactly one JSON object — no markdown, no explanation:
       {"light_phase": <0, 1, or 2>}
@@ -98,26 +92,18 @@ def _build_prompt(obs: TrafficObservation) -> str:
           Emergency queue   : N={em_q[0]}, S={em_q[1]}, E={em_q[2]}, W={em_q[3]}
           Emergency urgency : N={em_u[0]}, S={em_u[1]}, E={em_u[2]}, W={em_u[3]}
 
-        Output exactly: {{"light_phase": 0}}
+        Respond with exactly: {{"light_phase": <0, 1, or 2>}}
     """).strip()
 
 # ---------------------------------------------------------------------------
-# Rule-based fallback (used when LLM call fails)
+# Rule-based fallback
 # ---------------------------------------------------------------------------
 
 def _rule_based_action(obs: TrafficObservation) -> TrafficAction:
-    """Simple heuristic: emergency first, else highest queue."""
     em_q = obs.emergency_queue
     q    = obs.queue_lengths
-
-    # Emergency vehicle present?
     if sum(em_q) > 0:
-        if em_q[0] + em_q[1] >= em_q[2] + em_q[3]:
-            return TrafficAction(light_phase=0)  # NS Green
-        else:
-            return TrafficAction(light_phase=1)  # EW Green
-
-    # Highest queue direction
+        return TrafficAction(light_phase=0 if em_q[0] + em_q[1] >= em_q[2] + em_q[3] else 1)
     ns_total = q[0] + q[1]
     ew_total = q[2] + q[3]
     if obs.current_phase == 0 and obs.time_in_phase < 4:
@@ -127,25 +113,12 @@ def _rule_based_action(obs: TrafficObservation) -> TrafficAction:
     return TrafficAction(light_phase=0 if ns_total >= ew_total else 1)
 
 # ---------------------------------------------------------------------------
-# LLM action
+# LLM action — client passed in from main() (created once with env-level vars)
 # ---------------------------------------------------------------------------
 
-def get_llm_action(obs: TrafficObservation) -> TrafficAction:
-    api_base = os.environ.get("API_BASE_URL", API_BASE_URL)
-    model    = os.environ.get("MODEL_NAME", MODEL_NAME)
-    api_key  = os.environ.get("API_KEY", os.environ.get("HF_TOKEN", ""))
-
-    if not api_key:
-        api_key = API_KEY # fallback to static value if any
-
-    if not api_key:
-        raise ValueError("API_KEY or HF_TOKEN environment variable is required")
-
-    print(f"[LLM] base_url={api_base} model={model} key_set={bool(api_key)}", flush=True)
-    client = OpenAI(base_url=api_base, api_key=api_key)
-
+def get_llm_action(client: OpenAI, obs: TrafficObservation) -> TrafficAction:
     resp = client.chat.completions.create(
-        model=model,
+        model=MODEL_NAME,
         messages=[
             {"role": "system", "content": SYSTEM_PROMPT},
             {"role": "user",   "content": _build_prompt(obs)},
@@ -154,57 +127,46 @@ def get_llm_action(obs: TrafficObservation) -> TrafficAction:
         max_tokens=MAX_TOKENS,
         stream=False,
     )
-    data_str = resp.choices[0].message.content or "{}"
-
-    # Try to parse the JSON manually since we removed response_format
-    import re
-    match = re.search(r'\{.*\}', data_str.replace('\n', ' '))
-    if match:
-        data = json.loads(match.group(0))
-    else:
-        data = json.loads(data_str)
-
-    phase = int(data.get("light_phase", obs.current_phase))
-    phase = max(0, min(2, phase))
+    data_str = (resp.choices[0].message.content or "").strip()
+    match = re.search(r'\{[^}]*\}', data_str.replace('\n', ' '))
+    data  = json.loads(match.group(0) if match else data_str)
+    phase = max(0, min(2, int(data.get("light_phase", obs.current_phase))))
     return TrafficAction(light_phase=phase)
 
 # ---------------------------------------------------------------------------
-# Grade fetcher  (calls /grade after episode ends)
+# Grade fetcher
 # ---------------------------------------------------------------------------
 
 def _fetch_score(task_id: str, state_payload: dict) -> float:
-    """Call the /grade endpoint and return a clamped (0.001, 0.999) score."""
     try:
         r = _http.post(
             f"{SERVER_URL}/grade",
             json={
-                "task_id":               task_id,
-                "total_vehicles_passed": state_payload.get("total_vehicles_passed", 0),
-                "total_emergency_passed":state_payload.get("total_emergency_passed", 0),
-                "total_waiting_time":    state_payload.get("total_waiting_time", 0.0),
-                "total_collisions":      state_payload.get("total_collisions", 0),
-                "total_emergency_delay": state_payload.get("total_emergency_delay", 0.0),
-                "total_phase_changes":   state_payload.get("total_phase_changes", 0),
-                "step_count":            max(state_payload.get("step_count", 1), 1),
+                "task_id":                task_id,
+                "total_vehicles_passed":  state_payload.get("total_vehicles_passed", 0),
+                "total_emergency_passed": state_payload.get("total_emergency_passed", 0),
+                "total_waiting_time":     state_payload.get("total_waiting_time", 0.0),
+                "total_collisions":       state_payload.get("total_collisions", 0),
+                "total_emergency_delay":  state_payload.get("total_emergency_delay", 0.0),
+                "total_phase_changes":    state_payload.get("total_phase_changes", 0),
+                "step_count":             max(state_payload.get("step_count", 1), 1),
             },
             timeout=10,
         )
         if r.status_code == 200:
-            raw = float(r.json().get("score", 0.5))
-            return max(0.001, min(0.999, raw))
+            return max(0.001, min(0.999, float(r.json().get("score", 0.5))))
     except Exception:
         pass
-    return 0.5  # safe fallback
-
+    return 0.5
 
 # ---------------------------------------------------------------------------
 # Task runner
 # ---------------------------------------------------------------------------
 
-def run_task(task_id: str) -> None:
+def run_task(task_id: str, client: OpenAI) -> None:
     print(f"[START] task={task_id} env=traffic-control model={MODEL_NAME}", flush=True)
 
-    rewards: list[float] = []
+    rewards: List[float] = []
     success = False
 
     try:
@@ -214,14 +176,12 @@ def run_task(task_id: str) -> None:
 
             while not step_result.done:
                 obs       = step_result.observation
-                error_msg = "null"
+                error_msg: Optional[str] = None
 
                 try:
-                    action = get_llm_action(obs)
+                    action = get_llm_action(client, obs)
                 except Exception as exc:
-                    import traceback
-                    print(f"[LLM_ERROR] {exc}", flush=True)
-                    traceback.print_exc()
+                    print(f"[DEBUG] Model request failed: {exc}", flush=True)
                     error_msg = str(exc).replace('"', "'").replace("\\", "")
                     action    = _rule_based_action(obs)
 
@@ -229,20 +189,21 @@ def run_task(task_id: str) -> None:
 
                 try:
                     step_result = env.step(action)
-                    done_str    = "true" if step_result.done else "false"
                     reward_val  = step_result.reward if step_result.reward is not None else 0.0
                     rewards.append(reward_val)
+                    done_val    = str(step_result.done).lower()
+                    error_val   = error_msg if error_msg else "null"
                     print(
                         f"[STEP] step={step} action={action_str} "
-                        f"reward={reward_val:.2f} done={done_str} error={error_msg}",
-                        flush=True
+                        f"reward={reward_val:.2f} done={done_val} error={error_val}",
+                        flush=True,
                     )
                 except Exception as exc:
-                    env_error = str(exc).replace('"', "'").replace("\\", "")
+                    env_err = str(exc).replace('"', "'").replace("\\", "")
                     print(
                         f"[STEP] step={step} action={action_str} "
-                        f"reward=0.00 done=true error={env_error}",
-                        flush=True
+                        f"reward=0.00 done=true error={env_err}",
+                        flush=True,
                     )
                     break
 
@@ -254,10 +215,8 @@ def run_task(task_id: str) -> None:
         print(f"[STEP] step=0 action=none reward=0.00 done=true error={exc}", flush=True)
         success = False
 
-    success_str = "true" if success else "false"
     rewards_str = ",".join(f"{r:.2f}" for r in rewards) if rewards else "0.00"
 
-    # Fetch final grade score from /grade endpoint
     score = 0.5
     try:
         state_resp = _http.get(f"{SERVER_URL}/state", timeout=10)
@@ -266,30 +225,35 @@ def run_task(task_id: str) -> None:
     except Exception:
         pass
 
-    print(f"[END] success={success_str} steps={len(rewards)} score={score:.3f} rewards={rewards_str}", flush=True)
-
+    print(
+        f"[END] success={str(success).lower()} steps={len(rewards)} "
+        f"score={score:.3f} rewards={rewards_str}",
+        flush=True,
+    )
 
 # ---------------------------------------------------------------------------
 # Entry point
 # ---------------------------------------------------------------------------
 
 def main() -> None:
-    # Startup diagnostics — helps debug proxy connectivity issues
-    _api_base = os.environ.get("API_BASE_URL", API_BASE_URL)
-    _model    = os.environ.get("MODEL_NAME", MODEL_NAME)
-    _key      = os.environ.get("API_KEY") or os.environ.get("HF_TOKEN", "")
-    print(f"[CONFIG] API_BASE_URL={_api_base} MODEL_NAME={_model} API_KEY_SET={bool(_key)}", flush=True)
+    print(
+        f"[CONFIG] API_BASE_URL={API_BASE_URL} MODEL_NAME={MODEL_NAME} "
+        f"API_KEY_SET={bool(API_KEY)} SERVER_URL={SERVER_URL}",
+        flush=True,
+    )
 
-    if not _key:
+    if not API_KEY:
         raise SystemExit(
-            "[FATAL] API_KEY (or HF_TOKEN) environment variable is not set. "
-            "Cannot make LLM calls without an API key."
+            "[FATAL] Neither API_KEY nor HF_TOKEN is set. "
+            "The validator must inject API_KEY as an environment variable."
         )
 
-    tasks = ["basic_flow", "emergency_priority", "dynamic_scenarios"]
-    for task in tasks:
-        run_task(task)
-        print()  # blank line between tasks
+    # Create the OpenAI client once using module-level env vars
+    client = OpenAI(base_url=API_BASE_URL, api_key=API_KEY)
+
+    for task in ["basic_flow", "emergency_priority", "dynamic_scenarios"]:
+        run_task(task, client)
+        print(flush=True)
 
 
 if __name__ == "__main__":

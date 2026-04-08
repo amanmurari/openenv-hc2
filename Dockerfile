@@ -45,6 +45,9 @@ COPY --chown=user inference.py ./traffic_control/inference.py
 COPY --chown=user openenv.yaml ./traffic_control/openenv.yaml
 COPY --chown=user server/ ./traffic_control/server/
 
+# inference.py must also be at the container root (validator requirement)
+COPY --chown=user inference.py ./inference.py
+
 # ── Create package anchor so Python treats traffic_control/ as the package ─
 RUN echo "" > ./traffic_control/__init__.py || true
 
