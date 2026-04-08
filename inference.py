@@ -141,16 +141,28 @@ def get_llm_action(obs: TrafficObservation) -> TrafficAction:
                 {"role": "system", "content": SYSTEM_PROMPT},
                 {"role": "user",   "content": _build_prompt(obs)},
             ],
-            response_format={"type": "json_object"},
             temperature=TEMPERATURE,
             max_tokens=MAX_TOKENS,
+            stream=False,
         )
-        data  = json.loads(resp.choices[0].message.content or "{}")
+        data_str = resp.choices[0].message.content or "{}"
+        
+        # Try to parse the JSON manually since we removed response_format
+        import re
+        match = re.search(r'\{.*\}', data_str.replace('\n', ' '))
+        if match:
+            data = json.loads(match.group(0))
+        else:
+            data = json.loads(data_str)
+            
         phase = int(data.get("light_phase", obs.current_phase))
         phase = max(0, min(2, phase))
         return TrafficAction(light_phase=phase)
-    except Exception:
-        return _rule_based_action(obs)
+    except Exception as exc:
+        print(f"[DEBUG] LLM call failed: {exc}", flush=True)
+        # If it fails, fallback to rule-based BUT we also raise so the orchestrator 
+        # knows it failed instead of silently passing with 0 proxy usage.
+        raise exc
 
 # ---------------------------------------------------------------------------
 # Grade fetcher  (calls /grade after episode ends)
