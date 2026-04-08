@@ -222,12 +222,7 @@ def run_task(task_id: str, client: OpenAI) -> None:
                 obs       = step_result.observation
                 error_msg: Optional[str] = None
 
-                try:
-                    action = get_llm_action(client, obs)
-                except Exception as exc:
-                    print(f"[DEBUG] Model request failed: {exc}", flush=True)
-                    error_msg = str(exc).replace('"', "'").replace("\\", "")
-                    action    = _rule_based_action(obs)
+                action = get_llm_action(client, obs)
 
                 action_str = f"TrafficAction(light_phase={action.light_phase})"
 
