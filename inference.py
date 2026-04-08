@@ -47,10 +47,14 @@ except ImportError:
 # Configuration
 # ---------------------------------------------------------------------------
 
-API_BASE_URL: str = os.getenv("API_BASE_URL", "https://api.openai.com/v1")
-MODEL_NAME:   str = os.getenv("MODEL_NAME", "gpt-4.1-mini")
-API_KEY:      str = os.getenv("API_KEY", os.getenv("HF_TOKEN", ""))
-SERVER_URL:   str = os.getenv("SERVER_URL", "http://localhost:8000")
+API_BASE_URL = os.getenv("API_BASE_URL", "https://api.openai.com/v1")
+MODEL_NAME   = os.getenv("MODEL_NAME", "gpt-4.1-mini")
+
+# The testing environment proxies use "API_KEY", but the pre-validation wants "HF_TOKEN"
+HF_TOKEN = os.getenv("HF_TOKEN")
+API_KEY  = os.getenv("API_KEY", HF_TOKEN)
+
+SERVER_URL = os.getenv("SERVER_URL", "http://localhost:8000")
 
 if not API_KEY:
     raise ValueError("API_KEY or HF_TOKEN environment variable is required")
