@@ -52,8 +52,8 @@ except ImportError:
 # ---------------------------------------------------------------------------
 
 API_BASE_URL = os.environ["API_BASE_URL"]
-MODEL_NAME   = os.environ.get("MODEL_NAME") or "gpt-4.1-mini"
 API_KEY      = os.environ["API_KEY"]
+MODEL_NAME   = os.environ.get("MODEL_NAME", "gpt-4.1-mini")
 SERVER_URL   = os.environ.get("SERVER_URL", "http://localhost:8000")
 
 SEED        = 42
