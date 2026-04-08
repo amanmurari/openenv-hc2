@@ -9,11 +9,12 @@ Mandatory env variables (injected by validator):
 Optional:
     SERVER_URL     Running env server (default: http://localhost:8000)
 
-Run:
+Usage:
     API_BASE_URL=<url> API_KEY=<key> python inference.py
 
-IMPORTANT: Do not use fallback values for API_BASE_URL or API_KEY.
-           The validator requires all API calls go through the LiteLLM proxy.
+CRITICAL: This script REQUIRES API_BASE_URL and API_KEY from environment.
+          No fallbacks or hardcoded values are used.
+          The validator injects these to route calls through LiteLLM proxy.
 """
 
 import os
@@ -50,9 +51,9 @@ except ImportError:
 # Configuration — read from env at import time (matches sample script pattern)
 # ---------------------------------------------------------------------------
 
-API_BASE_URL = os.environ.get("API_BASE_URL") or "https://router.huggingface.co/v1"
+API_BASE_URL = os.environ["API_BASE_URL"]
 MODEL_NAME   = os.environ.get("MODEL_NAME") or "gpt-4.1-mini"
-API_KEY      = os.environ.get("HF_TOKEN") or os.environ.get("API_KEY", "")
+API_KEY      = os.environ["API_KEY"]
 SERVER_URL   = os.environ.get("SERVER_URL", "http://localhost:8000")
 
 SEED        = 42
