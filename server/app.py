@@ -535,6 +535,7 @@ async def list_agents():
     """List available agents in the arena."""
     return {
         "agents": [
+            {"id": "llm", "name": "Dynamic LLM Agent", "description": "Makes live LLM API calls for each decision"},
             {"id": "rule_based", "name": "Smart Rule-Based", "description": "Optimized rule-based controller"},
             {"id": "random", "name": "Random Baseline", "description": "Random action selector"},
             {"id": "round_robin", "name": "Round Robin", "description": "Simple alternating controller"},

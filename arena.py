@@ -4,12 +4,16 @@ Comparative Agent Arena
 Run multiple agents simultaneously to compare performance.
 Supports:
 - Rule-based agent
-- LLM agent
+- LLM agent (makes live API calls)
 - Random agent
 """
 
-import asyncio
+import os
+import json
+import textwrap
+import time
 import random
+import asyncio
 from typing import Dict, List, Any, Optional
 from dataclasses import dataclass, field
 from datetime import datetime
@@ -17,6 +21,13 @@ from datetime import datetime
 from traffic_control.environment import TrafficControlEnvironment
 from traffic_control.models import TrafficAction, TrafficObservation
 from traffic_control.tasks import grade, GradeResult
+
+
+try:
+    from openai import OpenAI
+    _HAS_OPENAI = True
+except ImportError:
+    _HAS_OPENAI = False
 
 
 @dataclass
@@ -106,12 +117,134 @@ class RoundRobinAgent:
         return int(phase_index)
 
 
+# LLM System Prompt for arena
+LLM_SYSTEM_PROMPT = textwrap.dedent("""
+    You are an Autonomous Traffic Control AI managing a 4-way intersection.
+
+    PHASES:
+      0 = North-South Green  (N/S vehicles may pass)
+      1 = East-West Green    (E/W vehicles may pass)
+      2 = All Red            (no vehicles pass)
+
+    DECISION RULES (apply in order):
+      1. EMERGENCY CHECK: If emergency vehicles are waiting, prioritize them.
+      2. MINIMUM PHASE TIME: Stay in current phase at least 3 steps if traffic present.
+      3. QUEUE BALANCE: Switch to direction with significantly more traffic.
+
+    OUTPUT: Reply with exactly one JSON object: {"light_phase": <0, 1, or 2>}
+""")
+
+
+class LLM_Agent:
+    """LLM-powered agent that makes dynamic API calls."""
+    
+    def __init__(
+        self,
+        name: str = "LLM-Agent",
+        api_base_url: Optional[str] = None,
+        api_key: Optional[str] = None,
+        model_name: str = "gpt-4.1-mini",
+    ):
+        self.name = name
+        self.model_name = model_name
+        self.api_calls_made = 0
+        
+        # Initialize OpenAI client if credentials available
+        if _HAS_OPENAI and (api_base_url or api_key):
+            self.client = OpenAI(
+                base_url=api_base_url or "https://api.openai.com/v1",
+                api_key=api_key or "dummy-key",
+            )
+        else:
+            self.client = None
+    
+    def _build_prompt(self, obs: TrafficObservation) -> str:
+        """Build the user prompt from observation."""
+        return (
+            f"Current phase: {obs.current_phase} (0=NS Green, 1=EW Green, 2=All Red)\n"
+            f"Time in phase: {obs.time_in_phase} steps\n"
+            f"\n"
+            f"Queue lengths (N, S, E, W): {obs.queue_lengths}\n"
+            f"Emergency queues (N, S, E, W): {obs.emergency_queue}\n"
+            f"Emergency urgency (N, S, E, W): {obs.emergency_urgency}\n"
+            f"\n"
+            f"What light phase should be set? Respond with JSON: {{\"light_phase\": 0, 1, or 2}}"
+        )
+    
+    def decide(self, obs: TrafficObservation) -> int:
+        """Make LLM API call to get decision."""
+        if not self.client:
+            # Fallback to rule-based if no client
+            return self._rule_fallback(obs)
+        
+        try:
+            resp = self.client.chat.completions.create(
+                model=self.model_name,
+                messages=[
+                    {"role": "system", "content": LLM_SYSTEM_PROMPT},
+                    {"role": "user", "content": self._build_prompt(obs)},
+                ],
+                temperature=0.0,
+                max_tokens=32,
+                stream=False,
+            )
+            self.api_calls_made += 1
+            
+            content = resp.choices[0].message.content.strip()
+            
+            # Parse JSON response
+            try:
+                data = json.loads(content)
+                phase = int(data.get("light_phase", 0))
+                return max(0, min(2, phase))  # Clamp to valid range
+            except (json.JSONDecodeError, ValueError, KeyError):
+                # Fallback if parsing fails
+                return self._rule_fallback(obs)
+                
+        except Exception as e:
+            # Fallback on API error
+            print(f"[LLM Agent] API error: {e}, using fallback")
+            return self._rule_fallback(obs)
+    
+    def _rule_fallback(self, obs: TrafficObservation) -> int:
+        """Rule-based fallback when LLM fails."""
+        em_q = obs.emergency_queue
+        em_u = obs.emergency_urgency
+        q = obs.queue_lengths
+        current = obs.current_phase
+        
+        # Emergency prioritization
+        ns_em = em_u[0] + em_u[1] + em_q[0] + em_q[1]
+        ew_em = em_u[2] + em_u[3] + em_q[2] + em_q[3]
+        
+        if ns_em > 0 or ew_em > 0:
+            return 0 if ns_em >= ew_em else 1
+        
+        # Queue-based
+        ns_total = q[0] + q[1]
+        ew_total = q[2] + q[3]
+        
+        if ns_total > ew_total:
+            return 0
+        elif ew_total > ns_total:
+            return 1
+        else:
+            return current if current in (0, 1) else 0
+
+
 class Arena:
     """Run multiple agents and compare results."""
     
     def __init__(self):
         self.results: List[AgentResult] = []
+        
+        # Get LLM credentials from env (for arena LLM agent)
+        api_base = os.environ.get("API_BASE_URL")
+        api_key = os.environ.get("API_KEY")
+        model = os.environ.get("MODEL_NAME", "gpt-4.1-mini")
+        
         self.agents = {
+            "llm": LLM_Agent("Dynamic LLM", api_base, api_key, model),
             "rule_based": RuleBasedAgent("Smart Rule-Based"),
             "random": RandomAgent("Random Baseline"),
             "round_robin": RoundRobinAgent("Round Robin"),
