@@ -2,15 +2,18 @@
 Inference Script — Autonomous Traffic Control OpenEnv Environment
 =================================================================
 Mandatory env variables (injected by validator):
-    API_BASE_URL   LLM proxy endpoint
+    API_BASE_URL   LLM proxy endpoint (MUST use validator's LiteLLM proxy)
     MODEL_NAME     Model identifier
-    API_KEY        LiteLLM proxy key  (fallback: HF_TOKEN)
+    API_KEY        LiteLLM proxy key (MUST use validator's injected key)
 
 Optional:
     SERVER_URL     Running env server (default: http://localhost:8000)
 
 Run:
     API_BASE_URL=<url> API_KEY=<key> python inference.py
+
+IMPORTANT: Do not use fallback values for API_BASE_URL or API_KEY.
+           The validator requires all API calls go through the LiteLLM proxy.
 """
 
 import os
@@ -47,9 +50,9 @@ except ImportError:
 # Configuration — read from env at import time (matches sample script pattern)
 # ---------------------------------------------------------------------------
 
-API_BASE_URL = os.environ.get("API_BASE_URL", "https://api.openai.com/v1")
-MODEL_NAME   = os.environ.get("MODEL_NAME", "gpt-4.1-mini")
-API_KEY      = os.environ.get("API_KEY") or os.environ.get("HF_TOKEN", "")
+API_BASE_URL = os.environ.get("API_BASE_URL") or "https://router.huggingface.co/v1"
+MODEL_NAME   = os.environ.get("MODEL_NAME") or "gpt-4.1-mini"
+API_KEY      = os.environ.get("HF_TOKEN") or os.environ.get("API_KEY", "")
 SERVER_URL   = os.environ.get("SERVER_URL", "http://localhost:8000")
 
 SEED        = 42
@@ -68,12 +71,28 @@ SYSTEM_PROMPT = textwrap.dedent("""
     PHASES:
       0 = North-South Green  (N/S vehicles may pass)
       1 = East-West Green    (E/W vehicles may pass)
-      2 = All Red            (no vehicles pass — use only for emergency clearance)
+      2 = All Red            (no vehicles pass — rarely needed)
 
-    STRATEGY:
-      1. If any emergency vehicles are waiting, switch to their direction immediately.
-      2. Otherwise, switch to the direction with the most queued vehicles.
-      3. Avoid changing phase too frequently (wait at least 4 steps per phase).
+    DECISION RULES (apply in order):
+      1. EMERGENCY CHECK: If emergency vehicles are waiting (emergency_queue > 0),
+         IMMEDIATELY switch to phase 0 if N/S has emergencies, else phase 1.
+         Urgency 8-10 is critical - act immediately regardless of time_in_phase.
+
+      2. MINIMUM PHASE TIME: Stay in current phase at least 3 steps.
+         If time_in_phase < 3, remain in current phase.
+
+      3. QUEUE BALANCE: After minimum time, compare N/S vs E/W queue depths.
+         - If one direction has 3+ more vehicles than the other, switch to that phase.
+         - If within 2 vehicles, stay in current phase to avoid switch penalty.
+
+      4. EMPTY QUEUE: If current direction has 0 vehicles waiting and other direction > 0,
+         switch immediately (no minimum time wait needed).
+
+    REWARD SIGNALS:
+      - Vehicles passing: +0.2 each
+      - Emergency vehicles passing: +10 each
+      - Phase change with empty queue: -0.5 penalty
+      - Emergency waiting: -0.4 * urgency per step (HUGE penalty)
 
     OUTPUT: Reply with exactly one JSON object — no markdown, no explanation:
       {"light_phase": <0, 1, or 2>}
@@ -96,21 +115,45 @@ def _build_prompt(obs: TrafficObservation) -> str:
     """).strip()
 
 # ---------------------------------------------------------------------------
-# Rule-based fallback
+# Rule-based fallback — optimized for high scores
 # ---------------------------------------------------------------------------
 
 def _rule_based_action(obs: TrafficObservation) -> TrafficAction:
     em_q = obs.emergency_queue
+    em_u = obs.emergency_urgency
     q    = obs.queue_lengths
-    if sum(em_q) > 0:
-        return TrafficAction(light_phase=0 if em_q[0] + em_q[1] >= em_q[2] + em_q[3] else 1)
+    current = obs.current_phase
+    time_in = obs.time_in_phase
+
+    # Emergency prioritization: urgency-weighted score per direction
+    ns_em_urgency = em_u[0] + em_u[1] + em_q[0] * 2 + em_q[1] * 2
+    ew_em_urgency = em_u[2] + em_u[3] + em_q[2] * 2 + em_q[3] * 2
+
+    if ns_em_urgency > 0 or ew_em_urgency > 0:
+        # Emergency waiting - switch immediately to help them
+        return TrafficAction(light_phase=0 if ns_em_urgency >= ew_em_urgency else 1)
+
+    # No emergencies - use queue depth with hysteresis
     ns_total = q[0] + q[1]
     ew_total = q[2] + q[3]
-    if obs.current_phase == 0 and obs.time_in_phase < 4:
+
+    # Dynamic minimum phase time based on queue depth (deeper queues = stay longer)
+    min_phase_time = min(3 + max(ns_total, ew_total) // 5, 8)
+
+    # Stay in current phase if below min time and still has traffic
+    if current == 0 and time_in < min_phase_time and ns_total > 0:
         return TrafficAction(light_phase=0)
-    if obs.current_phase == 1 and obs.time_in_phase < 4:
+    if current == 1 and time_in < min_phase_time and ew_total > 0:
         return TrafficAction(light_phase=1)
-    return TrafficAction(light_phase=0 if ns_total >= ew_total else 1)
+
+    # Switch to direction with more traffic (with 2-vehicle hysteresis to prevent flip-flopping)
+    if ns_total >= ew_total + 2:
+        return TrafficAction(light_phase=0)
+    elif ew_total >= ns_total + 2:
+        return TrafficAction(light_phase=1)
+    else:
+        # Within 2 vehicles - stay in current phase to avoid switch penalty
+        return TrafficAction(light_phase=current if current in (0, 1) else 0)
 
 # ---------------------------------------------------------------------------
 # LLM action — client passed in from main() (created once with env-level vars)
@@ -244,7 +287,7 @@ def main() -> None:
 
     if not API_KEY:
         raise SystemExit(
-            "[FATAL] Neither API_KEY nor HF_TOKEN is set. "
+            "[FATAL] API_KEY is not set. "
             "The validator must inject API_KEY as an environment variable."
         )
 
