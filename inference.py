@@ -56,14 +56,11 @@ API_KEY  = os.getenv("API_KEY", HF_TOKEN)
 
 SERVER_URL = os.getenv("SERVER_URL", "http://localhost:8000")
 
-if not API_KEY:
-    raise ValueError("API_KEY or HF_TOKEN environment variable is required")
-
 SEED        = 42
 MAX_TOKENS  = 32
 TEMPERATURE = 0.0
 
-llm_client = OpenAI(base_url=API_BASE_URL, api_key=API_KEY)
+# Client instantiation moved inside the function to ensure it picks up dynamically injected envs
 
 # ---------------------------------------------------------------------------
 # Prompts
@@ -134,9 +131,21 @@ def _rule_based_action(obs: TrafficObservation) -> TrafficAction:
 # ---------------------------------------------------------------------------
 
 def get_llm_action(obs: TrafficObservation) -> TrafficAction:
+    api_base = os.environ.get("API_BASE_URL", API_BASE_URL)
+    model    = os.environ.get("MODEL_NAME", MODEL_NAME)
+    api_key  = os.environ.get("API_KEY", os.environ.get("HF_TOKEN", ""))
+    
+    if not api_key:
+        api_key = API_KEY # fallback to static value if any
+
+    if not api_key:
+        raise ValueError("API_KEY or HF_TOKEN environment variable is required")
+
+    client = OpenAI(base_url=api_base, api_key=api_key)
+
     try:
-        resp = llm_client.chat.completions.create(
-            model=MODEL_NAME,
+        resp = client.chat.completions.create(
+            model=model,
             messages=[
                 {"role": "system", "content": SYSTEM_PROMPT},
                 {"role": "user",   "content": _build_prompt(obs)},
