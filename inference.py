@@ -51,6 +51,7 @@ except ImportError:
 # Configuration — read from env at import time (matches sample script pattern)
 # ---------------------------------------------------------------------------
 
+# CRITICAL: Use exact syntax validator requires for static analysis
 API_BASE_URL = os.environ["API_BASE_URL"]
 API_KEY      = os.environ["API_KEY"]
 MODEL_NAME   = os.environ.get("MODEL_NAME", "gpt-4.1-mini")
@@ -161,6 +162,7 @@ def _rule_based_action(obs: TrafficObservation) -> TrafficAction:
 # ---------------------------------------------------------------------------
 
 def get_llm_action(client: OpenAI, obs: TrafficObservation) -> TrafficAction:
+    print(f"[DEBUG] Making LLM call to {API_BASE_URL} with model {MODEL_NAME}", flush=True)
     resp = client.chat.completions.create(
         model=MODEL_NAME,
         messages=[
@@ -171,6 +173,7 @@ def get_llm_action(client: OpenAI, obs: TrafficObservation) -> TrafficAction:
         max_tokens=MAX_TOKENS,
         stream=False,
     )
+    print(f"[DEBUG] LLM response received", flush=True)
     data_str = (resp.choices[0].message.content or "").strip()
     match = re.search(r'\{[^}]*\}', data_str.replace('\n', ' '))
     data  = json.loads(match.group(0) if match else data_str)
@@ -275,20 +278,30 @@ def run_task(task_id: str, client: OpenAI) -> None:
 # ---------------------------------------------------------------------------
 
 def main() -> None:
+    # Debug: show env var status with explicit length check
     print(
-        f"[CONFIG] API_BASE_URL={API_BASE_URL} MODEL_NAME={MODEL_NAME} "
-        f"API_KEY_SET={bool(API_KEY)} SERVER_URL={SERVER_URL}",
+        f"[CONFIG] API_BASE_URL={API_BASE_URL} (len={len(API_BASE_URL)}) "
+        f"API_KEY={API_KEY[:10]}... (len={len(API_KEY)}) "
+        f"MODEL_NAME={MODEL_NAME}",
         flush=True,
     )
-
-    if not API_KEY:
-        raise SystemExit(
-            "[FATAL] API_KEY is not set. "
-            "The validator must inject API_KEY as an environment variable."
-        )
+    
+    # Ensure env vars are not empty
+    if not API_BASE_URL or not API_KEY:
+        raise SystemExit(f"[FATAL] Empty env vars: API_BASE_URL='{API_BASE_URL}', API_KEY empty={not API_KEY}")
 
     # Create the OpenAI client once using module-level env vars
     client = OpenAI(base_url=API_BASE_URL, api_key=API_KEY)
+    
+    # Verify the client is configured correctly by making a test call
+    try:
+        _ = client.chat.completions.create(
+            model=MODEL_NAME,
+            messages=[{"role": "user", "content": "test"}],
+            max_tokens=1,
+        )
+    except Exception as e:
+        print(f"[WARN] Test call failed: {e}", flush=True)
 
     for task in ["basic_flow", "emergency_priority", "dynamic_scenarios"]:
         run_task(task, client)
