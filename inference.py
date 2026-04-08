@@ -134,44 +134,39 @@ def get_llm_action(obs: TrafficObservation) -> TrafficAction:
     api_base = os.environ.get("API_BASE_URL", API_BASE_URL)
     model    = os.environ.get("MODEL_NAME", MODEL_NAME)
     api_key  = os.environ.get("API_KEY", os.environ.get("HF_TOKEN", ""))
-    
+
     if not api_key:
         api_key = API_KEY # fallback to static value if any
 
     if not api_key:
         raise ValueError("API_KEY or HF_TOKEN environment variable is required")
 
+    print(f"[LLM] base_url={api_base} model={model} key_set={bool(api_key)}", flush=True)
     client = OpenAI(base_url=api_base, api_key=api_key)
 
-    try:
-        resp = client.chat.completions.create(
-            model=model,
-            messages=[
-                {"role": "system", "content": SYSTEM_PROMPT},
-                {"role": "user",   "content": _build_prompt(obs)},
-            ],
-            temperature=TEMPERATURE,
-            max_tokens=MAX_TOKENS,
-            stream=False,
-        )
-        data_str = resp.choices[0].message.content or "{}"
-        
-        # Try to parse the JSON manually since we removed response_format
-        import re
-        match = re.search(r'\{.*\}', data_str.replace('\n', ' '))
-        if match:
-            data = json.loads(match.group(0))
-        else:
-            data = json.loads(data_str)
-            
-        phase = int(data.get("light_phase", obs.current_phase))
-        phase = max(0, min(2, phase))
-        return TrafficAction(light_phase=phase)
-    except Exception as exc:
-        print(f"[DEBUG] LLM call failed: {exc}", flush=True)
-        # If it fails, fallback to rule-based BUT we also raise so the orchestrator 
-        # knows it failed instead of silently passing with 0 proxy usage.
-        raise exc
+    resp = client.chat.completions.create(
+        model=model,
+        messages=[
+            {"role": "system", "content": SYSTEM_PROMPT},
+            {"role": "user",   "content": _build_prompt(obs)},
+        ],
+        temperature=TEMPERATURE,
+        max_tokens=MAX_TOKENS,
+        stream=False,
+    )
+    data_str = resp.choices[0].message.content or "{}"
+
+    # Try to parse the JSON manually since we removed response_format
+    import re
+    match = re.search(r'\{.*\}', data_str.replace('\n', ' '))
+    if match:
+        data = json.loads(match.group(0))
+    else:
+        data = json.loads(data_str)
+
+    phase = int(data.get("light_phase", obs.current_phase))
+    phase = max(0, min(2, phase))
+    return TrafficAction(light_phase=phase)
 
 # ---------------------------------------------------------------------------
 # Grade fetcher  (calls /grade after episode ends)
@@ -224,6 +219,9 @@ def run_task(task_id: str) -> None:
                 try:
                     action = get_llm_action(obs)
                 except Exception as exc:
+                    import traceback
+                    print(f"[LLM_ERROR] {exc}", flush=True)
+                    traceback.print_exc()
                     error_msg = str(exc).replace('"', "'").replace("\\", "")
                     action    = _rule_based_action(obs)
 
@@ -276,6 +274,18 @@ def run_task(task_id: str) -> None:
 # ---------------------------------------------------------------------------
 
 def main() -> None:
+    # Startup diagnostics — helps debug proxy connectivity issues
+    _api_base = os.environ.get("API_BASE_URL", API_BASE_URL)
+    _model    = os.environ.get("MODEL_NAME", MODEL_NAME)
+    _key      = os.environ.get("API_KEY") or os.environ.get("HF_TOKEN", "")
+    print(f"[CONFIG] API_BASE_URL={_api_base} MODEL_NAME={_model} API_KEY_SET={bool(_key)}", flush=True)
+
+    if not _key:
+        raise SystemExit(
+            "[FATAL] API_KEY (or HF_TOKEN) environment variable is not set. "
+            "Cannot make LLM calls without an API key."
+        )
+
     tasks = ["basic_flow", "emergency_priority", "dynamic_scenarios"]
     for task in tasks:
         run_task(task)
