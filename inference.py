@@ -4,14 +4,14 @@ Inference Script — Autonomous Traffic Control OpenEnv Environment
 Mandatory env variables:
     API_BASE_URL   LLM endpoint  (default: https://api.openai.com/v1)
     MODEL_NAME     Model to use  (default: gpt-4.1-mini)
-    HF_TOKEN       Your Hugging Face / LLM API key  ← REQUIRED
+    API_KEY        Your LLM API key / LiteLLM Proxy Key ← REQUIRED (can fallback to HF_TOKEN)
 
 Optional:
     SERVER_URL     Running env server (default: http://localhost:8000)
 
 Run:
-    HF_TOKEN=<key> python inference.py
-    HF_TOKEN=<key> SERVER_URL=http://localhost:8000 python inference.py
+    API_KEY=<key> python inference.py
+    API_KEY=<key> SERVER_URL=http://localhost:8000 python inference.py
 """
 
 import os
@@ -49,17 +49,17 @@ except ImportError:
 
 API_BASE_URL: str = os.getenv("API_BASE_URL", "https://api.openai.com/v1")
 MODEL_NAME:   str = os.getenv("MODEL_NAME", "gpt-4.1-mini")
-HF_TOKEN:     str = os.getenv("HF_TOKEN", "")
+API_KEY:      str = os.getenv("API_KEY", os.getenv("HF_TOKEN", ""))
 SERVER_URL:   str = os.getenv("SERVER_URL", "http://localhost:8000")
 
-if not HF_TOKEN:
-    raise ValueError("HF_TOKEN environment variable is required")
+if not API_KEY:
+    raise ValueError("API_KEY or HF_TOKEN environment variable is required")
 
 SEED        = 42
 MAX_TOKENS  = 32
 TEMPERATURE = 0.0
 
-llm_client = OpenAI(base_url=API_BASE_URL, api_key=HF_TOKEN)
+llm_client = OpenAI(base_url=API_BASE_URL, api_key=API_KEY)
 
 # ---------------------------------------------------------------------------
 # Prompts
@@ -182,7 +182,7 @@ def _fetch_score(task_id: str, state_payload: dict) -> float:
 # ---------------------------------------------------------------------------
 
 def run_task(task_id: str) -> None:
-    print(f"[START] task={task_id} env=traffic-control model={MODEL_NAME}")
+    print(f"[START] task={task_id} env=traffic-control model={MODEL_NAME}", flush=True)
 
     rewards: list[float] = []
     success = False
@@ -211,13 +211,15 @@ def run_task(task_id: str) -> None:
                     rewards.append(reward_val)
                     print(
                         f"[STEP] step={step} action={action_str} "
-                        f"reward={reward_val:.2f} done={done_str} error={error_msg}"
+                        f"reward={reward_val:.2f} done={done_str} error={error_msg}",
+                        flush=True
                     )
                 except Exception as exc:
                     env_error = str(exc).replace('"', "'").replace("\\", "")
                     print(
                         f"[STEP] step={step} action={action_str} "
-                        f"reward=0.00 done=true error={env_error}"
+                        f"reward=0.00 done=true error={env_error}",
+                        flush=True
                     )
                     break
 
@@ -226,7 +228,7 @@ def run_task(task_id: str) -> None:
             success = True
 
     except Exception as exc:
-        print(f"[STEP] step=0 action=none reward=0.00 done=true error={exc}")
+        print(f"[STEP] step=0 action=none reward=0.00 done=true error={exc}", flush=True)
         success = False
 
     success_str = "true" if success else "false"
@@ -241,7 +243,7 @@ def run_task(task_id: str) -> None:
     except Exception:
         pass
 
-    print(f"[END] success={success_str} steps={len(rewards)} score={score:.3f} rewards={rewards_str}")
+    print(f"[END] success={success_str} steps={len(rewards)} score={score:.3f} rewards={rewards_str}", flush=True)
 
 
 # ---------------------------------------------------------------------------
