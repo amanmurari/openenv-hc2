@@ -56,8 +56,13 @@ app = create_app(
 
 
 # ---------------------------------------------------------------------------
-# 2. /grade endpoint
+# 2. /grade endpoint & root for HF Spaces
 # ---------------------------------------------------------------------------
+
+@app.get("/", include_in_schema=False)
+def index():
+    """Hugging Face Spaces healthcheck requires a 200 OK on the root path."""
+    return {"status": "ok", "message": "Autonomous Traffic Control OpenEnv"}
 
 @app.post("/grade", tags=["eval"])
 async def grade(request: Request):

@@ -3,15 +3,24 @@ FROM python:3.11-slim
 LABEL maintainer="OpenEnv Hackathon"
 LABEL description="Autonomous Traffic Control – OpenEnv Environment (self-contained)"
 
-WORKDIR /app
-
-# ── Install system deps ────────────────────────────────────────────────────
+# ── Install system deps (as root) ──────────────────────────────────────────
 RUN apt-get update && apt-get install -y --no-install-recommends \
         build-essential \
     && rm -rf /var/lib/apt/lists/*
 
+# ── Create user for Hugging Face Spaces (UID 1000) ─────────────────────────
+RUN useradd -m -u 1000 user
+USER user
+ENV HOME=/home/user \
+    PATH=/home/user/.local/bin:$PATH
+
+WORKDIR $HOME/app
+
 # ── Copy packaging manifest first (layer-cache friendly) ──────────────────
-COPY pyproject.toml README.md ./
+COPY --chown=user pyproject.toml README.md ./
+
+# Fix the setuptools package lookup to not scan the root filesystem in Docker
+RUN sed -i 's|where = \[".."\]|where = \["."\]|g' pyproject.toml || true
 
 # ── Install Python deps ────────────────────────────────────────────────────
 RUN pip install --no-cache-dir \
@@ -27,14 +36,14 @@ RUN pip install --no-cache-dir \
     "python-multipart>=0.0.6"
 
 # ── Copy source (self-contained; no root-level deps needed) ───────────────
-COPY models.py ./traffic_control/models.py
-COPY environment.py ./traffic_control/environment.py
-COPY tasks.py ./traffic_control/tasks.py
-COPY client.py ./traffic_control/client.py
-COPY __init__.py ./traffic_control/__init__.py
-COPY inference.py ./traffic_control/inference.py
-COPY openenv.yaml ./traffic_control/openenv.yaml
-COPY server/ ./traffic_control/server/
+COPY --chown=user models.py ./traffic_control/models.py
+COPY --chown=user environment.py ./traffic_control/environment.py
+COPY --chown=user tasks.py ./traffic_control/tasks.py
+COPY --chown=user client.py ./traffic_control/client.py
+COPY --chown=user __init__.py ./traffic_control/__init__.py
+COPY --chown=user inference.py ./traffic_control/inference.py
+COPY --chown=user openenv.yaml ./traffic_control/openenv.yaml
+COPY --chown=user server/ ./traffic_control/server/
 
 # ── Create package anchor so Python treats traffic_control/ as the package ─
 RUN echo "" > ./traffic_control/__init__.py || true
@@ -43,18 +52,17 @@ RUN echo "" > ./traffic_control/__init__.py || true
 RUN pip install --no-cache-dir -e .
 
 # ── Runtime config ────────────────────────────────────────────────────────
-ENV WORKERS=2
-ENV PORT=8000
+ENV PORT=7860
 ENV PYTHONDONTWRITEBYTECODE=1
 ENV PYTHONUNBUFFERED=1
 
-EXPOSE 8000
+EXPOSE 7860
 
-HEALTHCHECK --interval=15s --timeout=5s --start-period=15s --retries=3 \
-    CMD python -c "import urllib.request; urllib.request.urlopen('http://localhost:8000/health')"
-
+# Single worker is required: Gradio's mount_gradio_app is not fork-safe.
+# HF Spaces expects a single healthy process on port 7860.
 CMD ["sh", "-c", \
      "uvicorn traffic_control.server.app:app \
       --host 0.0.0.0 \
       --port ${PORT} \
-      --workers ${WORKERS}"]
+      --workers 1 \
+      --timeout-keep-alive 75"]
