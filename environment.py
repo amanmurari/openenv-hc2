@@ -5,11 +5,12 @@ Implements openenv-core's Environment interface so it works directly
 with create_app() — no adapters needed.
 
 Simulates a 4-way intersection with:
-  - Poisson vehicle arrivals per approach
-  - Emergency vehicles with urgency levels (0-10)
+  - Time-varying traffic wave patterns (sinusoidal arrival rates)
+  - Directional traffic imbalance (rush-hour asymmetry)
+  - Emergency vehicles with urgency levels (0-10) that escalate over time
   - Yellow-light transition state machine (2-step yellow)
   - Traffic-surge events (hard task only)
-  - Multi-objective reward function
+  - Multi-objective reward function aligned with grading weights
 """
 
 from __future__ import annotations
@@ -84,7 +85,7 @@ YELLOW_DURATION = 2
 
 
 # ---------------------------------------------------------------------------
-# Task configurations
+# Task configurations — enhanced with wave/imbalance parameters
 # ---------------------------------------------------------------------------
 
 TASK_CONFIGS: Dict[str, dict] = {
@@ -96,6 +97,12 @@ TASK_CONFIGS: Dict[str, dict] = {
         "max_queue_per_lane":      20,
         "surge_probability":       0.0,
         "surge_multiplier":        1.0,
+        # Wave pattern: sinusoidal variation in arrival rate
+        "wave_amplitude":          0.15,   # ±15% variation
+        "wave_period":             40,     # steps per wave cycle
+        # Directional imbalance: multiplier for NS vs EW
+        "ns_bias":                 1.2,    # NS gets 20% more traffic
+        "ew_bias":                 0.8,
     },
     "emergency_priority": {
         "vehicle_arrival_rate":    0.5,
@@ -105,6 +112,10 @@ TASK_CONFIGS: Dict[str, dict] = {
         "max_queue_per_lane":      20,
         "surge_probability":       0.0,
         "surge_multiplier":        1.0,
+        "wave_amplitude":          0.20,
+        "wave_period":             50,
+        "ns_bias":                 1.0,
+        "ew_bias":                 1.0,
     },
     "dynamic_scenarios": {
         "vehicle_arrival_rate":    0.7,
@@ -114,6 +125,10 @@ TASK_CONFIGS: Dict[str, dict] = {
         "max_queue_per_lane":      30,
         "surge_probability":       0.04,
         "surge_multiplier":        3.0,
+        "wave_amplitude":          0.25,
+        "wave_period":             60,
+        "ns_bias":                 1.3,
+        "ew_bias":                 0.7,
     },
 }
 
@@ -163,6 +178,7 @@ class TrafficControlEnvironment(Environment):
         self._episode_id: str = ""
         self._step_count: int = 0
         self._queues: List[List[Vehicle]] = [[] for _ in range(4)]
+        self._prev_queue_lengths: List[int] = [0, 0, 0, 0]
         self._current_phase: LightPhase = LightPhase.NS_GREEN
         self._time_in_phase: int = 0
         self._pending_phase: Optional[int] = None
@@ -194,6 +210,7 @@ class TrafficControlEnvironment(Environment):
         self._episode_id  = episode_id or str(uuid.uuid4())
         self._step_count  = 0
         self._queues      = [[] for _ in range(4)]
+        self._prev_queue_lengths = [0, 0, 0, 0]
         self._current_phase = LightPhase.NS_GREEN
         self._time_in_phase = 0
         self._pending_phase = None
@@ -210,6 +227,11 @@ class TrafficControlEnvironment(Environment):
     def step(self, action: TrafficAction) -> TrafficObservation:  # type: ignore[override]
         """Execute one simulation step."""
         self._step_count += 1
+
+        # Snapshot queue lengths before this step for trend tracking
+        self._prev_queue_lengths = [
+            len(q) for q in self._queues
+        ]
 
         self._spawn_vehicles()
         phase_changed = self._apply_action(action)
@@ -249,13 +271,27 @@ class TrafficControlEnvironment(Environment):
     # Simulation internals
     # ------------------------------------------------------------------
 
+    def _get_wave_rate(self, base_rate: float) -> float:
+        """Apply sinusoidal wave pattern to arrival rate."""
+        amp    = self._cfg.get("wave_amplitude", 0.0)
+        period = self._cfg.get("wave_period", 40)
+        if amp <= 0 or period <= 0:
+            return base_rate
+        wave = math.sin(2 * math.pi * self._step_count / period)
+        return max(0.05, base_rate * (1.0 + amp * wave))
+
     def _spawn_vehicles(self) -> None:
-        arr     = self._cfg["vehicle_arrival_rate"]
-        em      = self._cfg["emergency_arrival_rate"]
-        urg     = self._cfg["emergency_urgency_range"]
-        surge_p = self._cfg["surge_probability"]
-        surge_m = self._cfg["surge_multiplier"]
-        max_q   = self._cfg["max_queue_per_lane"]
+        base_arr = self._cfg["vehicle_arrival_rate"]
+        em       = self._cfg["emergency_arrival_rate"]
+        urg      = self._cfg["emergency_urgency_range"]
+        surge_p  = self._cfg["surge_probability"]
+        surge_m  = self._cfg["surge_multiplier"]
+        max_q    = self._cfg["max_queue_per_lane"]
+        ns_bias  = self._cfg.get("ns_bias", 1.0)
+        ew_bias  = self._cfg.get("ew_bias", 1.0)
+
+        # Apply wave pattern
+        arr = self._get_wave_rate(base_arr)
 
         surge_dir   = -1
         surge_extra = 0
@@ -264,7 +300,9 @@ class TrafficControlEnvironment(Environment):
             surge_extra = max(0, int(self._rng.gauss(3, 1) * surge_m))
 
         for d in range(4):
-            n = self._poisson(arr)
+            # Directional bias: NS directions (0,1) vs EW (2,3)
+            dir_bias = ns_bias if d in (0, 1) else ew_bias
+            n = self._poisson(arr * dir_bias)
             if d == surge_dir:
                 n += surge_extra
             for _ in range(n):
@@ -345,6 +383,8 @@ class TrafficControlEnvironment(Environment):
                 v.waiting_time += 1
                 total += 1.0
                 if v.vehicle_type == VehicleType.EMERGENCY:
+                    # Urgency escalates over time — waiting makes it worse
+                    v.urgency = min(10, v.urgency + (1 if v.waiting_time % 5 == 0 else 0))
                     self._total_emergency_delay += 1.0
         return total
 
@@ -362,26 +402,42 @@ class TrafficControlEnvironment(Environment):
         collision: bool,
         phase_changed: bool,
     ) -> float:
-        r  = vehicles_passed  * 0.20
-        r += emergency_passed * 10.0
-        r -= waiting_delta    * 0.05
+        # --- Throughput reward (aligned with grading target ~1.8-2.0 veh/step) ---
+        r  = vehicles_passed  * 0.30
+        r += emergency_passed * 12.0
 
+        # --- Waiting penalty (progressive) ---
+        r -= waiting_delta * 0.08
+
+        # --- Emergency urgency penalty (super-linear: urgency^1.5) ---
         for d in range(4):
             for v in self._queues[d]:
                 if v.vehicle_type == VehicleType.EMERGENCY:
-                    r -= v.urgency * 0.4
+                    r -= (v.urgency ** 1.5) * 0.5
 
+        # --- Collision is catastrophic ---
         if collision:
             r -= 200.0
 
+        # --- Phase change penalty (proportional to wasted switch) ---
         if phase_changed:
             p = int(self._current_phase)
+            new_dir_queue = 0
             if p == PHASE_NS_GREEN:
-                if (len(self._queues[0]) + len(self._queues[1])) == 0:
-                    r -= 0.5
+                new_dir_queue = len(self._queues[0]) + len(self._queues[1])
             elif p == PHASE_EW_GREEN:
-                if (len(self._queues[2]) + len(self._queues[3])) == 0:
-                    r -= 0.5
+                new_dir_queue = len(self._queues[2]) + len(self._queues[3])
+
+            total_queue = sum(len(q) for q in self._queues)
+            if total_queue > 0:
+                empty_ratio = 1.0 - (new_dir_queue / total_queue)
+                r -= 0.5 + empty_ratio * 1.5  # heavier penalty for switching to emptier side
+            else:
+                r -= 0.5
+
+        # --- Stability bonus: reward NOT switching when traffic is flowing ---
+        if not phase_changed and vehicles_passed > 0:
+            r += 0.05
 
         return r
 
@@ -409,6 +465,17 @@ class TrafficControlEnvironment(Environment):
             emergency_queue.append(em)
             emergency_urgency.append(max_u)
 
+        # Compute queue trend (current - previous)
+        current_totals = [len(q) for q in self._queues]
+        queue_trend = [
+            current_totals[i] - self._prev_queue_lengths[i]
+            for i in range(4)
+        ]
+
+        # Compute average wait time
+        all_waits = [v.waiting_time for q in self._queues for v in q]
+        avg_wait = sum(all_waits) / max(len(all_waits), 1) if all_waits else 0.0
+
         return TrafficObservation(
             current_phase=int(self._current_phase),
             time_in_phase=self._time_in_phase,
@@ -417,6 +484,10 @@ class TrafficControlEnvironment(Environment):
             emergency_urgency=emergency_urgency,
             vehicles_passed=vehicles_passed,
             emergency_passed=emergency_passed,
+            avg_wait_time=round(avg_wait, 2),
+            queue_trend=queue_trend,
+            total_vehicles_passed_cumulative=self._total_vehicles_passed,
+            total_emergency_passed_cumulative=self._total_emergency_passed,
             total_waiting_time=waiting_delta,
             collision=collision,
             reward=reward,

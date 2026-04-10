@@ -87,6 +87,24 @@ class TrafficObservation(Observation):
     vehicles_passed: int = Field(default=0, description="Regular vehicles cleared this step")
     emergency_passed: int = Field(default=0, description="Emergency vehicles cleared this step")
 
+    # -- Trend & context fields --
+    avg_wait_time: float = Field(
+        default=0.0,
+        description="Average waiting time across all queued vehicles this step",
+    )
+    queue_trend: List[int] = Field(
+        default_factory=lambda: [0, 0, 0, 0],
+        description="Queue growth since last step per approach [N,S,E,W] (positive=growing)",
+    )
+    total_vehicles_passed_cumulative: int = Field(
+        default=0,
+        description="Cumulative regular vehicles cleared this episode",
+    )
+    total_emergency_passed_cumulative: int = Field(
+        default=0,
+        description="Cumulative emergency vehicles cleared this episode",
+    )
+
     # -- Penalty signals --
     total_waiting_time: float = Field(
         default=0.0,

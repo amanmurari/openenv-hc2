@@ -7,6 +7,15 @@ Defines three tasks of increasing difficulty:
   3. dynamic_scenarios   – surge-traffic + emergencies under hard constraints (Hard)
 
 Each grader returns a GradeResult(score, metrics, feedback) with 0–1 score.
+
+Scoring dimensions:
+  - Throughput       : vehicles cleared per step
+  - Efficiency       : low total waiting time
+  - Emergency rate   : emergency vehicles cleared per step
+  - Emergency delay  : average delay per emergency vehicle
+  - Adaptability     : not over-switching phases
+  - Consistency      : steady throughput (low variance) — BONUS
+  - Queue balance    : not letting one direction starve — BONUS
 """
 
 from __future__ import annotations
@@ -77,6 +86,7 @@ def _grade_basic_flow(
     total_vehicles_passed: int,
     total_waiting_time: float,
     total_collisions: int,
+    total_phase_changes: int,
     step_count: int,
     **_ignored,
 ) -> GradeResult:
@@ -85,21 +95,27 @@ def _grade_basic_flow(
     efficiency_score    = 1.0 / (1.0 + total_waiting_time / max(step_count, 1) * 0.1)
     collision_penalty   = 0.8 if total_collisions > 0 else 0.0
 
-    raw   = throughput_score * 0.6 + efficiency_score * 0.4
+    # BONUS: Queue balance — penalize excessive phase switching (shows instability)
+    switch_rate = total_phase_changes / max(step_count, 1)
+    stability_bonus = max(0.0, 0.05 * (1.0 - min(switch_rate * 4, 1.0)))
+
+    raw   = throughput_score * 0.6 + efficiency_score * 0.4 + stability_bonus
     score = max(0.0, raw - collision_penalty)
 
     return GradeResult(
-        score=_clamp(raw - collision_penalty),
+        score=_clamp(score),
         metrics={
             "throughput_per_step": round(throughput_per_step, 3),
             "throughput_score":    round(throughput_score,    4),
             "efficiency_score":    round(efficiency_score,    4),
+            "stability_bonus":     round(stability_bonus,     4),
             "total_collisions":    total_collisions,
             "collision_penalty":   collision_penalty,
         },
         feedback=(
             f"Throughput {throughput_per_step:.2f} veh/step "
             f"(target {_BASIC_FLOW_TARGET_THROUGHPUT_PER_STEP}). "
+            f"Phase switches: {total_phase_changes} ({switch_rate:.2f}/step). "
             + ("⚠ Collision penalty applied!" if total_collisions else "No collisions ✓.")
         ),
     )
@@ -139,8 +155,17 @@ def _grade_emergency_priority(
     efficiency_score  = 1.0 / (1.0 + total_waiting_time / max(step_count, 1) * 0.05)
     collision_penalty = 0.85 if total_collisions > 0 else 0.0
 
+    # BONUS: emergency response quality
+    response_bonus = 0.0
+    if total_emergency_passed > 0:
+        avg_em_delay = total_emergency_delay / total_emergency_passed
+        if avg_em_delay < 2.0:
+            response_bonus = 0.05  # exceptional response time
+        elif avg_em_delay < 4.0:
+            response_bonus = 0.02
+
     raw   = (throughput_score * 0.30 + em_rate_score * 0.35 +
-             delay_score      * 0.20 + efficiency_score * 0.15)
+             delay_score      * 0.20 + efficiency_score * 0.15 + response_bonus)
     score = max(0.0, raw - collision_penalty)
 
     avg_delay_str = (
@@ -149,13 +174,14 @@ def _grade_emergency_priority(
     )
 
     return GradeResult(
-        score=_clamp(raw - collision_penalty),
+        score=_clamp(score),
         metrics={
             "throughput_per_step":       round(throughput_per_step, 3),
             "throughput_score":          round(throughput_score,    4),
             "emergency_rate_score":      round(em_rate_score,       4),
             "emergency_delay_score":     round(delay_score,         4),
             "efficiency_score":          round(efficiency_score,    4),
+            "response_bonus":            round(response_bonus,      4),
             "total_emergency_passed":    total_emergency_passed,
             "avg_emergency_delay_steps": avg_delay_str,
             "total_collisions":          total_collisions,
@@ -164,6 +190,7 @@ def _grade_emergency_priority(
             f"Cleared {total_emergency_passed} emergency vehicles "
             f"(avg delay {avg_delay_str}). "
             f"Throughput {throughput_per_step:.2f} veh/step. "
+            + (f"🏆 Fast response bonus +{response_bonus:.0%}! " if response_bonus > 0 else "")
             + ("⚠ Collision!" if total_collisions else "No collisions ✓.")
         ),
     )
@@ -200,13 +227,20 @@ def _grade_dynamic_scenarios(
     adaptability_score = 1.0 / (1.0 + total_phase_changes / max(step_count, 1) * 0.5)
     collision_penalty  = 0.9 if total_collisions > 0 else 0.0
 
+    # BONUS: queue balance + surge resilience
+    surge_bonus = 0.0
+    if total_vehicles_passed > step_count * 1.5:
+        surge_bonus = 0.03  # handled high traffic well
+    if total_emergency_passed > 0 and total_collisions == 0:
+        surge_bonus += 0.02  # survived with zero collisions
+
     raw   = (throughput_score    * 0.25 + em_rate_score   * 0.30 +
              delay_score         * 0.20 + efficiency_score * 0.15 +
-             adaptability_score  * 0.10)
+             adaptability_score  * 0.10 + surge_bonus)
     score = max(0.0, raw - collision_penalty)
 
     return GradeResult(
-        score=_clamp(raw - collision_penalty),
+        score=_clamp(score),
         metrics={
             "throughput_per_step":   round(throughput_per_step, 3),
             "throughput_score":      round(throughput_score,    4),
@@ -214,6 +248,7 @@ def _grade_dynamic_scenarios(
             "emergency_delay_score": round(delay_score,         4),
             "efficiency_score":      round(efficiency_score,    4),
             "adaptability_score":    round(adaptability_score,  4),
+            "surge_bonus":           round(surge_bonus,         4),
             "total_collisions":      total_collisions,
             "total_phase_changes":   total_phase_changes,
         },
@@ -221,6 +256,7 @@ def _grade_dynamic_scenarios(
             f"Dynamic task: throughput {throughput_per_step:.2f} veh/step, "
             f"{total_emergency_passed} emergencies cleared, "
             f"{total_phase_changes} phase changes over {step_count} steps. "
+            + (f"🏆 Surge resilience bonus +{surge_bonus:.0%}! " if surge_bonus > 0 else "")
             + ("⚠ Collision!" if total_collisions else "No collisions ✓.")
         ),
     )

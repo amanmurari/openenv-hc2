@@ -35,5 +35,5 @@ server = "traffic_control.server.app:main"
 include-package-data = true
 
 [tool.setuptools.packages.find]
-where = [".."]
+where = ["."]
 include = ["traffic_control*"]
