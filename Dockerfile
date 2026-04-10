@@ -43,6 +43,9 @@ COPY --chown=user client.py ./traffic_control/client.py
 COPY --chown=user __init__.py ./traffic_control/__init__.py
 COPY --chown=user inference.py ./traffic_control/inference.py
 COPY --chown=user openenv.yaml ./traffic_control/openenv.yaml
+COPY --chown=user dashboard.py ./traffic_control/dashboard.py
+COPY --chown=user analytics.py ./traffic_control/analytics.py
+COPY --chown=user arena.py ./traffic_control/arena.py
 COPY --chown=user server/ ./traffic_control/server/
 
 # inference.py must also be at the container root (validator requirement)
