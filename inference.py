@@ -53,7 +53,7 @@ MODEL_NAME = os.getenv("MODEL_NAME", "gpt-4o-mini")
 HF_TOKEN = os.getenv("HF_TOKEN")
 LOCAL_IMAGE_NAME = os.getenv("LOCAL_IMAGE_NAME")
 
-SERVER_URL = os.getenv("SERVER_URL", "http://localhost:8000")
+SERVER_URL = os.getenv("SERVER_URL", "http://localhost:7860")
 
 SEED = 42
 MAX_TOKENS = 64
@@ -214,16 +214,18 @@ def get_llm_action(client: OpenAI, obs: TrafficObservation, step: int) -> Traffi
 
 def run_task(task: str, client: OpenAI) -> None:
     """Run a single task episode."""
-    with TrafficControlEnv(base_url=SERVER_URL).sync() as env:
-        # Note: openenv-core's reset takes task_id, so passing task_id=task
-        obs = env.reset(task_id=task, seed=SEED)
-        rewards: List[float] = []
-        step = 0
-        error_msg: Optional[str] = None
+    print(f'[START] task="{task}"', flush=True)
 
-        print(f'[START] task="{task}"', flush=True)
+    rewards: List[float] = []
+    step = 0
+    error_msg: Optional[str] = None
+    success = False
 
-        try:
+    try:
+        with TrafficControlEnv(base_url=SERVER_URL).sync() as env:
+            # Note: openenv-core's reset takes task_id, so passing task_id=task
+            obs = env.reset(task_id=task, seed=SEED)
+
             while not obs.done:
                 step += 1
                 action = get_llm_action(client, obs, step)
@@ -250,18 +252,20 @@ def run_task(task: str, client: OpenAI) -> None:
                     flush=True,
                 )
 
-        except Exception as exc:
-            error_msg = _sanitize(str(exc))
+            success = obs.done and not error_msg
 
-        success = not error_msg and obs.done
-        total_reward = sum(rewards)
-        rewards_str = ",".join(f"{r:.2f}" for r in rewards[-10:])  # last 10 for brevity
+    except Exception as exc:
+        error_msg = _sanitize(str(exc))
+        success = False
 
-        print(
-            f'[END] success={str(success).lower()} steps={step} '
-            f'total_reward={total_reward:.2f} rewards=[{rewards_str}]',
-            flush=True,
-        )
+    total_reward = sum(rewards)
+    rewards_str = ",".join(f"{r:.2f}" for r in rewards[-10:])  # last 10 for brevity
+
+    print(
+        f'[END] success={str(success).lower()} steps={step} '
+        f'total_reward={total_reward:.2f} rewards=[{rewards_str}]',
+        flush=True,
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -269,18 +273,20 @@ def run_task(task: str, client: OpenAI) -> None:
 # ---------------------------------------------------------------------------
 
 def main() -> None:
-    client = OpenAI(base_url=API_BASE_URL, api_key=HF_TOKEN or "dummy-key")
+    try:
+        client = OpenAI(base_url=API_BASE_URL, api_key=HF_TOKEN or "dummy-key")
+    except Exception:
+        client = None
 
     import time
-    # Prevent Phase 2 unhandled connection exception by waiting for the server
-    for _ in range(15):
+    # Fast reconnect logic so we don't trigger external Phase 2 timeouts
+    for _ in range(5):
         try:
-            r = _http.get(f"{SERVER_URL.rstrip('/')}/health", timeout=2)
+            r = _http.get(f"{SERVER_URL.rstrip('/')}/health", timeout=1)
             if r.status_code == 200:
                 break
         except Exception:
-            pass
-        time.sleep(2)
+            time.sleep(1)
 
     for task in ["basic_flow", "emergency_priority", "dynamic_scenarios"]:
         run_task(task, client)
