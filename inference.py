@@ -168,6 +168,7 @@ def _parse_phase(raw: str) -> int:
 
 def get_llm_action(client: OpenAI, obs: TrafficObservation, step: int) -> TrafficAction:
     """Always call LLM for every decision - required by validator."""
+    print(f"[DEBUG] Calling LLM API step={step} base_url={client.base_url}", flush=True)
     try:
         resp = client.chat.completions.create(
             model=MODEL_NAME,
@@ -181,12 +182,11 @@ def get_llm_action(client: OpenAI, obs: TrafficObservation, step: int) -> Traffi
         )
         raw = resp.choices[0].message.content.strip()
         phase = _parse_phase(raw)
+        print(f"[DEBUG] LLM response step={step} phase={phase}", flush=True)
         return TrafficAction(light_phase=phase)
     except Exception as exc:
-        import sys
-        print(f"LLM API Error: {exc}", file=sys.stderr)
-        # Emergency fallback only when API fails
-        return TrafficAction(light_phase=obs.current_phase if obs.current_phase in (0, 1) else 0)
+        print(f"[DEBUG] LLM API Error step={step}: {exc}", flush=True)
+        raise  # Re-raise to fail fast and see the error
 
 
 def run_task(task: str, client: OpenAI) -> None:
