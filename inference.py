@@ -48,8 +48,8 @@ except ImportError:
 # Configuration - CRITICAL: Use os.environ[] with NO fallbacks per validator
 # ---------------------------------------------------------------------------
 
-API_BASE_URL = os.getenv("API_BASE_URL", "http://localhost:8000")
-MODEL_NAME = os.getenv("MODEL_NAME", "gpt-4o-mini")
+API_BASE_URL = os.environ["API_BASE_URL"]
+MODEL_NAME = os.environ["MODEL_NAME"]
 HF_TOKEN = os.getenv("HF_TOKEN")
 LOCAL_IMAGE_NAME = os.getenv("LOCAL_IMAGE_NAME")
 
@@ -167,30 +167,7 @@ def _parse_phase(raw: str) -> int:
 
 
 def get_llm_action(client: OpenAI, obs: TrafficObservation, step: int) -> TrafficAction:
-    """Hybrid: rule-based for obvious cases, LLM for ambiguous."""
-    em_q = obs.emergency_queue
-    q = obs.queue_lengths
-    current = obs.current_phase
-    time_in = obs.time_in_phase
-
-    # Quick wins — pure rule-based (no API call)
-    ns_em = em_q[0] + em_q[1]
-    ew_em = em_q[2] + em_q[3]
-    ns_total = q[0] + q[1]
-    ew_total = q[2] + q[3]
-
-    # Emergency handling — always rule-based for speed
-    if ns_em > 0 and ew_em == 0:
-        return TrafficAction(light_phase=0)
-    if ew_em > 0 and ns_em == 0:
-        return TrafficAction(light_phase=1)
-
-    # Stay in phase if beneficial and within min time
-    if current in (0, 1) and time_in < 3:
-        if (current == 0 and ns_total > 0) or (current == 1 and ew_total > 0):
-            return TrafficAction(light_phase=current)
-
-    # Ambiguous case — call LLM
+    """Always call LLM for every decision - required by validator."""
     try:
         resp = client.chat.completions.create(
             model=MODEL_NAME,
@@ -208,8 +185,8 @@ def get_llm_action(client: OpenAI, obs: TrafficObservation, step: int) -> Traffi
     except Exception as exc:
         import sys
         print(f"LLM API Error: {exc}", file=sys.stderr)
-        # Fallback to rule-based on API error
-        return _rule_based_action(obs)
+        # Emergency fallback only when API fails
+        return TrafficAction(light_phase=obs.current_phase if obs.current_phase in (0, 1) else 0)
 
 
 def run_task(task: str, client: OpenAI) -> None:
