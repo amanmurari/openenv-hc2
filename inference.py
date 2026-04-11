@@ -251,7 +251,11 @@ def run_task(task: str, client: OpenAI) -> None:
 
 def main() -> None:
     # Must STRICTLY match AST requirements without exception wrappers!
-    client = OpenAI(base_url=os.environ["API_BASE_URL"], api_key=os.environ["API_KEY"])
+    api_base = os.environ["API_BASE_URL"]
+    api_key = os.environ["API_KEY"]
+    print(f"[INIT] Creating OpenAI client with base_url={api_base}", flush=True)
+    client = OpenAI(base_url=api_base, api_key=api_key)
+    print(f"[INIT] Client ready, will call LLM for every decision", flush=True)
     
     # Fast reconnect logic with smart port discovery
     import time
