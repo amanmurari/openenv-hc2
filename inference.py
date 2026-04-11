@@ -255,22 +255,7 @@ def main() -> None:
     api_key = os.environ["API_KEY"]
     print(f"[INIT] Creating OpenAI client with base_url={api_base}", flush=True)
     client = OpenAI(base_url=api_base, api_key=api_key)
-    
-    # Test API call to verify proxy connection
-    print(f"[INIT] Testing API connection...", flush=True)
-    try:
-        test_resp = client.chat.completions.create(
-            model=MODEL_NAME,
-            messages=[{"role": "user", "content": "Say 'API OK'"}],
-            max_tokens=10,
-            temperature=0,
-        )
-        print(f"[INIT] API test success: {test_resp.choices[0].message.content}", flush=True)
-    except Exception as e:
-        print(f"[INIT] API test failed: {e}", flush=True)
-        raise
-    
-    print(f"[INIT] Client ready, will call LLM for every decision", flush=True)
+    print(f"[INIT] Client ready, calling LLM for every decision", flush=True)
     
     # Fast reconnect logic with smart port discovery
     import time
