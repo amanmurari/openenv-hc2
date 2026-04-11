@@ -48,9 +48,7 @@ except ImportError:
 # Configuration - CRITICAL: Use os.environ[] with NO fallbacks per validator
 # ---------------------------------------------------------------------------
 
-API_BASE_URL = os.environ["API_BASE_URL"]
-API_KEY = os.environ["API_KEY"]
-MODEL_NAME = os.environ.get("MODEL_NAME", "gpt-4.1-mini")
+MODEL_NAME = os.environ.get("MODEL_NAME", "gpt-4o-mini")
 SERVER_URL = os.environ.get("SERVER_URL", "http://localhost:8000")
 
 SEED = 42
@@ -204,59 +202,62 @@ def get_llm_action(client: OpenAI, obs: TrafficObservation, step: int) -> Traffi
         phase = _parse_phase(raw)
         return TrafficAction(light_phase=phase)
     except Exception as exc:
+        import sys
+        print(f"LLM API Error: {exc}", file=sys.stderr)
         # Fallback to rule-based on API error
         return _rule_based_action(obs)
 
 
 def run_task(task: str, client: OpenAI) -> None:
     """Run a single task episode."""
-    env = TrafficControlEnv(base_url=SERVER_URL)
-    obs = env.reset(task=task, seed=SEED)
-    rewards: List[float] = []
-    step = 0
-    error_msg: Optional[str] = None
+    with TrafficControlEnv(base_url=SERVER_URL).sync() as env:
+        # Note: openenv-core's reset takes task_id, so passing task_id=task
+        obs = env.reset(task_id=task, seed=SEED)
+        rewards: List[float] = []
+        step = 0
+        error_msg: Optional[str] = None
 
-    print(f'[START] task="{task}"', flush=True)
+        print(f'[START] task="{task}"', flush=True)
 
-    try:
-        while not obs.done:
-            step += 1
-            action = get_llm_action(client, obs, step)
+        try:
+            while not obs.done:
+                step += 1
+                action = get_llm_action(client, obs, step)
 
-            try:
-                obs = env.step(action)
-            except Exception as exc:
-                error_msg = _sanitize(str(exc))
+                try:
+                    obs = env.step(action)
+                except Exception as exc:
+                    error_msg = _sanitize(str(exc))
+                    print(
+                        f'[STEP] step={step} action={action} reward=0.0 done=true error="{error_msg}"',
+                        flush=True,
+                    )
+                    break
+
+                reward_val = obs.reward if obs.reward is not None else 0.0
+                rewards.append(reward_val)
+
                 print(
-                    f'[STEP] step={step} action={action} reward=0.0 done=true error="{error_msg}"',
+                    f'[STEP] step={step} action={action} '
+                    f'reward={reward_val:.2f} done={str(obs.done).lower()} '
+                    f'phase={obs.current_phase} '
+                    f'queues={list(obs.queue_lengths)} '
+                    f'emergency={list(obs.emergency_queue)}',
                     flush=True,
                 )
-                break
 
-            reward_val = obs.reward if obs.reward is not None else 0.0
-            rewards.append(reward_val)
+        except Exception as exc:
+            error_msg = _sanitize(str(exc))
 
-            print(
-                f'[STEP] step={step} action={action} '
-                f'reward={reward_val:.2f} done={str(obs.done).lower()} '
-                f'phase={obs.current_phase} '
-                f'queues={list(obs.queue_lengths)} '
-                f'emergency={list(obs.emergency_queue)}',
-                flush=True,
-            )
+        success = not error_msg and obs.done
+        total_reward = sum(rewards)
+        rewards_str = ",".join(f"{r:.2f}" for r in rewards[-10:])  # last 10 for brevity
 
-    except Exception as exc:
-        error_msg = _sanitize(str(exc))
-
-    success = not error_msg and obs.done
-    total_reward = sum(rewards)
-    rewards_str = ",".join(f"{r:.2f}" for r in rewards[-10:])  # last 10 for brevity
-
-    print(
-        f'[END] success={str(success).lower()} steps={step} '
-        f'total_reward={total_reward:.2f} rewards=[{rewards_str}]',
-        flush=True,
-    )
+        print(
+            f'[END] success={str(success).lower()} steps={step} '
+            f'total_reward={total_reward:.2f} rewards=[{rewards_str}]',
+            flush=True,
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -264,7 +265,7 @@ def run_task(task: str, client: OpenAI) -> None:
 # ---------------------------------------------------------------------------
 
 def main() -> None:
-    client = OpenAI(base_url=API_BASE_URL, api_key=API_KEY)
+    client = OpenAI(base_url=os.environ["API_BASE_URL"], api_key=os.environ["API_KEY"])
 
     for task in ["basic_flow", "emergency_priority", "dynamic_scenarios"]:
         run_task(task, client)
