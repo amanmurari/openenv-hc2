@@ -273,24 +273,31 @@ def run_task(task: str, client: OpenAI) -> None:
 # ---------------------------------------------------------------------------
 
 def main() -> None:
-    try:
-        # STRICT MATCH for Hackathon AST parser
-        client = OpenAI(base_url=os.environ["API_BASE_URL"], api_key=os.environ["API_KEY"])
-    except KeyError:
-        # Fallback for dry-runs to prevent unhandled exceptions
-        client = OpenAI(base_url=os.getenv("API_BASE_URL", "http://localhost:8000"), api_key=os.getenv("API_KEY", "dummy-key"))
-    except Exception:
-        client = None
-
+    # Must STRICTLY match AST requirements without exception wrappers!
+    client = OpenAI(base_url=os.environ["API_BASE_URL"], api_key=os.environ["API_KEY"])
+    
+    # Fast reconnect logic with smart port discovery
     import time
-    # Fast reconnect logic so we don't trigger external Phase 2 timeouts
-    for _ in range(5):
-        try:
-            r = _http.get(f"{SERVER_URL.rstrip('/')}/health", timeout=1)
-            if r.status_code == 200:
-                break
-        except Exception:
-            time.sleep(1)
+    env_url = os.getenv("SERVER_URL")
+    urls_to_try = [env_url] if env_url else ["http://localhost:7860", "http://localhost:8000"]
+    
+    active_url = "http://localhost:7860"  # fallback
+    for url in urls_to_try:
+        found = False
+        for _ in range(15):
+            try:
+                r = _http.get(f"{url.rstrip('/')}/health", timeout=1)
+                if r.status_code == 200:
+                    active_url = url
+                    found = True
+                    break
+            except Exception:
+                time.sleep(1)
+        if found:
+            break
+
+    global SERVER_URL
+    SERVER_URL = active_url
 
     for task in ["basic_flow", "emergency_priority", "dynamic_scenarios"]:
         run_task(task, client)
