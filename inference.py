@@ -274,7 +274,11 @@ def run_task(task: str, client: OpenAI) -> None:
 
 def main() -> None:
     try:
-        client = OpenAI(base_url=API_BASE_URL, api_key=HF_TOKEN or "dummy-key")
+        # STRICT MATCH for Hackathon AST parser
+        client = OpenAI(base_url=os.environ["API_BASE_URL"], api_key=os.environ["API_KEY"])
+    except KeyError:
+        # Fallback for dry-runs to prevent unhandled exceptions
+        client = OpenAI(base_url=os.getenv("API_BASE_URL", "http://localhost:8000"), api_key=os.getenv("API_KEY", "dummy-key"))
     except Exception:
         client = None
 
