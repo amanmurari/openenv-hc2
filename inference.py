@@ -48,8 +48,12 @@ except ImportError:
 # Configuration - CRITICAL: Use os.environ[] with NO fallbacks per validator
 # ---------------------------------------------------------------------------
 
-MODEL_NAME = os.environ.get("MODEL_NAME", "gpt-4o-mini")
-SERVER_URL = os.environ.get("SERVER_URL", "http://localhost:8000")
+API_BASE_URL = os.getenv("API_BASE_URL", "http://localhost:8000")
+MODEL_NAME = os.getenv("MODEL_NAME", "gpt-4o-mini")
+HF_TOKEN = os.getenv("HF_TOKEN")
+LOCAL_IMAGE_NAME = os.getenv("LOCAL_IMAGE_NAME")
+
+SERVER_URL = os.getenv("SERVER_URL", "http://localhost:8000")
 
 SEED = 42
 MAX_TOKENS = 64
@@ -265,7 +269,18 @@ def run_task(task: str, client: OpenAI) -> None:
 # ---------------------------------------------------------------------------
 
 def main() -> None:
-    client = OpenAI(base_url=os.environ["API_BASE_URL"], api_key=os.environ["API_KEY"])
+    client = OpenAI(base_url=API_BASE_URL, api_key=HF_TOKEN or "dummy-key")
+
+    import time
+    # Prevent Phase 2 unhandled connection exception by waiting for the server
+    for _ in range(15):
+        try:
+            r = _http.get(f"{SERVER_URL.rstrip('/')}/health", timeout=2)
+            if r.status_code == 200:
+                break
+        except Exception:
+            pass
+        time.sleep(2)
 
     for task in ["basic_flow", "emergency_priority", "dynamic_scenarios"]:
         run_task(task, client)
