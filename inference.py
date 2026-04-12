@@ -422,11 +422,9 @@ def run_task(task: str, client: OpenAI) -> dict:
     max_possible = step * 10.0
     score        = min(0.999, max(0.001, total_reward / max_possible)) if max_possible > 0 else 0.001
 
-    elapsed_total = time.time() - task_start
     print(
         f'[END] success={str(success).lower()} steps={step} '
-        f'score={score:.3f} rewards={rewards_str} '
-        f'llm_calls={llm_calls} elapsed={elapsed_total:.0f}s',
+        f'score={score:.3f} rewards={rewards_str}',
         flush=True,
     )
 
