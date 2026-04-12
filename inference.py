@@ -91,10 +91,10 @@ def _parse_phase(raw: str) -> int:
         return int(m.group(1)) if m else 0
 
 
-def get_llm_action(client: OpenAI, obs: TrafficObservation, step: int) -> TrafficAction:
+def get_llm_action(client: OpenAI, obs: TrafficObservation, step: int, model: str) -> TrafficAction:
     """Call LLM for decision."""
     resp = client.chat.completions.create(
-        model=MODEL_NAME,
+        model=model,
         messages=[
             {"role": "system", "content": SYSTEM_PROMPT},
             {"role": "user", "content": _build_prompt(obs, step)},
@@ -107,9 +107,9 @@ def get_llm_action(client: OpenAI, obs: TrafficObservation, step: int) -> Traffi
     return TrafficAction(light_phase=phase)
 
 
-def run_task(task: str, client: OpenAI) -> dict:
+def run_task(task: str, client: OpenAI, model: str) -> dict:
     """Run a single task episode."""
-    print(f'[START] task={task} env=traffic_control model={MODEL_NAME}', flush=True)
+    print(f'[START] task={task} env=traffic_control model={model}', flush=True)
 
     rewards: List[float] = []
     step = 0
@@ -122,7 +122,7 @@ def run_task(task: str, client: OpenAI) -> dict:
 
             while not obs.done:
                 step += 1
-                action = get_llm_action(client, obs, step)
+                action = get_llm_action(client, obs, step, model)
                 action_str = f"light_phase={action.light_phase}"
 
                 try:
@@ -169,22 +169,23 @@ def run_task(task: str, client: OpenAI) -> dict:
 # ---------------------------------------------------------------------------
 
 def main():
-    """Main entry point."""
-    # Debug: Log environment variable status
-    print(f"[INIT] API_BASE_URL={API_BASE_URL[:30]}..." if API_BASE_URL else "[INIT] API_BASE_URL=MISSING", flush=True)
-    print(f"[INIT] API_KEY={API_KEY[:10]}..." if API_KEY else "[INIT] API_KEY=MISSING", flush=True)
-    print(f"[INIT] MODEL_NAME={MODEL_NAME}", flush=True)
+    """Main entry point - reads env vars directly as validator requires."""
+    # CRITICAL: Read environment variables directly here for validator detection
+    api_base = os.environ["API_BASE_URL"]
+    api_key = os.environ["API_KEY"]
+    model = os.getenv("MODEL_NAME", "gpt-4o-mini")
     
-    # Initialize OpenAI client per spec
-    client = OpenAI(
-        base_url=API_BASE_URL,
-        api_key=API_KEY
-    )
+    print(f"[INIT] API_BASE_URL={api_base[:30]}...", flush=True)
+    print(f"[INIT] API_KEY present={bool(api_key)}", flush=True)
+    print(f"[INIT] MODEL_NAME={model}", flush=True)
+    
+    # Initialize OpenAI client with directly-read env vars
+    client = OpenAI(base_url=api_base, api_key=api_key)
     print(f"[INIT] Client ready", flush=True)
 
     tasks = ["basic_flow", "emergency_priority", "dynamic_scenarios"]
     for task in tasks:
-        run_task(task, client)
+        run_task(task, client, model)
 
 
 if __name__ == "__main__":
