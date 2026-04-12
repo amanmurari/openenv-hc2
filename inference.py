@@ -170,7 +170,7 @@ def run_task(task: str, client: OpenAI) -> dict:
 
     print(
         f'[END] success={str(success).lower()} steps={step} '
-        f'score={score:.2f} rewards={rewards_str}',
+        f'score={score:.3f} rewards={rewards_str}',
         flush=True,
     )
 
