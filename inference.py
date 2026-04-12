@@ -166,7 +166,7 @@ def run_task(task: str, client: OpenAI) -> dict:
     rewards_str  = ",".join(f"{r:.2f}" for r in rewards) if rewards else "0.00"
     total_reward = sum(rewards)
     max_possible = step * 10.0
-    score        = min(1.0, max(0.0, total_reward / max_possible)) if max_possible > 0 else 0.0
+    score        = min(0.999, max(0.001, total_reward / max_possible)) if max_possible > 0 else 0.001
 
     print(
         f'[END] success={str(success).lower()} steps={step} '
