@@ -31,17 +31,17 @@ API_BASE_URL = os.getenv("API_BASE_URL") or "https://router.huggingface.co/v1"
 MODEL_NAME   = os.getenv("MODEL_NAME") or "Qwen/Qwen2.5-72B-Instruct"
 SERVER_URL   = os.getenv("SERVER_URL", "http://localhost:7860")
 SEED         = 42
-MAX_TOKENS   = 120    # short CoT + JSON — keeps latency low
+MAX_TOKENS   = 80     # brief CoT + JSON line — minimises latency
 TEMPERATURE  = 0.0
-LLM_TIMEOUT  = 6     # per-call timeout in seconds
+LLM_TIMEOUT  = 4     # per-call hard timeout (seconds)
 
-# Per-task wall-clock budget. Once elapsed > budget - 60s, force pure heuristic
-# so the episode always finishes inside the budget.
-# Total budget: 330+480+630 = 1440s = 24 min — well under the 30-min kill limit.
+# Per-task wall-clock budget. Once elapsed > budget - 45s, force pure heuristic.
+# Total: 240+360+480 = 1080s = 18 min — safely under the 20-min kill limit.
+# Expected with ~1s avg per LLM call: 900s = 15 min.
 TASK_BUDGET_S = {
-    "basic_flow":          330,
-    "emergency_priority":  480,
-    "dynamic_scenarios":   630,
+    "basic_flow":          240,
+    "emergency_priority":  360,
+    "dynamic_scenarios":   480,
 }
 
 TASK_MAX_STEPS = {"basic_flow": 200, "emergency_priority": 300, "dynamic_scenarios": 400}
@@ -357,7 +357,7 @@ def run_task(task: str, client: OpenAI) -> dict:
                         pass
 
                 elapsed         = time.time() - task_start
-                force_heuristic = elapsed > budget_s - 60
+                force_heuristic = elapsed > budget_s - 45
 
                 action, source = get_action(
                     client, obs, step, task, history, state, force_heuristic
