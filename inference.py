@@ -1,25 +1,16 @@
-"""
-Inference Script — Autonomous Traffic Control OpenEnv Environment
-Strictly follows validator spec from hackathon guidelines.
-"""
+"""Inference Script — Autonomous Traffic Control OpenEnv Environment"""
 
 import os
 import sys
 import json
 from typing import List, Optional
 
-# Allow running from repo root or from traffic_control/ subdirectory
+# Allow imports from repo root
 _HERE = os.path.dirname(os.path.abspath(__file__))
 _PARENT = os.path.dirname(_HERE)
 for _p in (_HERE, _PARENT):
     if _p not in sys.path:
         sys.path.insert(0, _p)
-
-try:
-    from dotenv import load_dotenv
-    load_dotenv()
-except ImportError:
-    pass
 
 from openai import OpenAI
 
@@ -30,14 +21,10 @@ except ImportError:
     from client import TrafficControlEnv  # type: ignore
     from models import TrafficAction, TrafficObservation  # type: ignore
 
-# ---------------------------------------------------------------------------
-# Configuration - EXACTLY per spec: defaults for API_BASE_URL and MODEL_NAME
-# ---------------------------------------------------------------------------
-
+# Environment variables - read per validator spec
 API_BASE_URL = os.environ["API_BASE_URL"]
-MODEL_NAME = os.getenv("MODEL_NAME", "gpt-4o-mini")
 API_KEY = os.environ["API_KEY"]
-
+MODEL_NAME = os.getenv("MODEL_NAME", "gpt-4o-mini")
 SERVER_URL = os.getenv("SERVER_URL", "http://localhost:7860")
 SEED = 42
 MAX_TOKENS = 64
@@ -91,10 +78,10 @@ def _parse_phase(raw: str) -> int:
         return int(m.group(1)) if m else 0
 
 
-def get_llm_action(client: OpenAI, obs: TrafficObservation, step: int, model: str) -> TrafficAction:
+def get_llm_action(client: OpenAI, obs: TrafficObservation, step: int) -> TrafficAction:
     """Call LLM for decision."""
     resp = client.chat.completions.create(
-        model=model,
+        model=MODEL_NAME,
         messages=[
             {"role": "system", "content": SYSTEM_PROMPT},
             {"role": "user", "content": _build_prompt(obs, step)},
@@ -107,9 +94,9 @@ def get_llm_action(client: OpenAI, obs: TrafficObservation, step: int, model: st
     return TrafficAction(light_phase=phase)
 
 
-def run_task(task: str, client: OpenAI, model: str) -> dict:
+def run_task(task: str, client: OpenAI) -> dict:
     """Run a single task episode."""
-    print(f'[START] task={task} env=traffic_control model={model}', flush=True)
+    print(f'[START] task={task} env=traffic_control model={MODEL_NAME}', flush=True)
 
     rewards: List[float] = []
     step = 0
@@ -122,7 +109,7 @@ def run_task(task: str, client: OpenAI, model: str) -> dict:
 
             while not obs.done:
                 step += 1
-                action = get_llm_action(client, obs, step, model)
+                action = get_llm_action(client, obs, step)
                 action_str = f"light_phase={action.light_phase}"
 
                 try:
@@ -169,23 +156,16 @@ def run_task(task: str, client: OpenAI, model: str) -> dict:
 # ---------------------------------------------------------------------------
 
 def main():
-    """Main entry point - reads env vars directly as validator requires."""
-    # CRITICAL: Read environment variables directly here for validator detection
-    api_base = os.environ["API_BASE_URL"]
-    api_key = os.environ["API_KEY"]
-    model = os.getenv("MODEL_NAME", "gpt-4o-mini")
-    
-    print(f"[INIT] API_BASE_URL={api_base[:30]}...", flush=True)
-    print(f"[INIT] API_KEY present={bool(api_key)}", flush=True)
-    print(f"[INIT] MODEL_NAME={model}", flush=True)
-    
-    # Initialize OpenAI client with directly-read env vars
-    client = OpenAI(base_url=api_base, api_key=api_key)
-    print(f"[INIT] Client ready", flush=True)
+    """Main entry point."""
+    # Initialize OpenAI client with environment variables
+    client = OpenAI(
+        base_url=os.environ["API_BASE_URL"],
+        api_key=os.environ["API_KEY"]
+    )
 
     tasks = ["basic_flow", "emergency_priority", "dynamic_scenarios"]
     for task in tasks:
-        run_task(task, client, model)
+        run_task(task, client)
 
 
 if __name__ == "__main__":
