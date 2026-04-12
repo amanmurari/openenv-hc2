@@ -31,17 +31,17 @@ API_BASE_URL = os.getenv("API_BASE_URL") or "https://router.huggingface.co/v1"
 MODEL_NAME   = os.getenv("MODEL_NAME") or "Qwen/Qwen2.5-72B-Instruct"
 SERVER_URL   = os.getenv("SERVER_URL", "http://localhost:7860")
 SEED         = 42
-MAX_TOKENS   = 80     # brief CoT + JSON line — minimises latency
+MAX_TOKENS   = 160    # enough for CoT reasoning + JSON line
 TEMPERATURE  = 0.0
-LLM_TIMEOUT  = 4     # per-call hard timeout (seconds)
+LLM_TIMEOUT  = 6     # per-call hard timeout (seconds)
 
 # Per-task wall-clock budget. Once elapsed > budget - 45s, force pure heuristic.
-# Total: 240+360+480 = 1080s = 18 min — safely under the 20-min kill limit.
-# Expected with ~1s avg per LLM call: 900s = 15 min.
+# Total: 270+390+510 = 1170s = 19.5 min — under the 20-min kill limit.
+# Worst case with 6s timeout: budget caps per-task so total can't exceed 1170s.
 TASK_BUDGET_S = {
-    "basic_flow":          240,
-    "emergency_priority":  360,
-    "dynamic_scenarios":   480,
+    "basic_flow":          270,
+    "emergency_priority":  390,
+    "dynamic_scenarios":   510,
 }
 
 TASK_MAX_STEPS = {"basic_flow": 200, "emergency_priority": 300, "dynamic_scenarios": 400}
@@ -85,7 +85,7 @@ def _heuristic_phase(obs: TrafficObservation, task: str) -> int:
         if cur in (0, 3): return 1 if ew_q > ns_q else 0
         return 0 if ns_q > ew_q else 1
 
-    # Critical emergency (urgency >= 8)
+    # Critical emergency (urgency >= 8) — or ANY emergency in hard tasks
     if ns_em > 0 and ns_urg >= 8 and ew_em > 0 and ew_urg >= 8:
         return 2
     if ns_em > 0 and ns_urg >= 8:
@@ -93,7 +93,14 @@ def _heuristic_phase(obs: TrafficObservation, task: str) -> int:
     if ew_em > 0 and ew_urg >= 8:
         return 1
 
-    # Moderate emergency (urgency >= 5)
+    # Any emergency in non-basic tasks — react immediately (avg_delay < 2 = +0.05 bonus)
+    if task != "basic_flow":
+        if ns_em > 0 and (ew_em == 0 or ns_urg >= ew_urg):
+            return 0
+        if ew_em > 0:
+            return 1
+
+    # Moderate emergency (urgency >= 5) for basic_flow
     if ns_em > 0 and ns_urg >= 5:
         if ew_em == 0 or ns_urg >= ew_urg:
             return 0
@@ -143,26 +150,31 @@ def _project_score(task: str, state: Optional[TrafficState], step: int) -> str:
         tput = min(tps / 1.5, 1.0)
         ems  = min(er / (1.0/20.0), 1.0)
         if s.total_emergency_passed > 0:
-            d    = max(0.0, 1.0 - (s.total_emergency_delay / s.total_emergency_passed) / 12.0)
             avgd = s.total_emergency_delay / s.total_emergency_passed
+            d    = max(0.0, 1.0 - avgd / 12.0)
+            bonus_str = "(BONUS+0.05!)" if avgd < 2.0 else "(BONUS+0.02 if<4)" if avgd < 4.0 else f"(need avg<4 for +0.02)"
         else:
-            d, avgd = 0.5, float("inf")
+            d, avgd, bonus_str = 0.5, float("inf"), "(no em cleared yet)"
         eff  = 1.0 / (1.0 + aw * 0.05)
-        proj = tput*0.30 + ems*0.35 + d*0.20 + eff*0.15
-        return f"projected={proj:.3f} em={ems:.2f}(×0.35) delay={d:.2f}(×0.20,avg={avgd:.1f}) tput={tput:.2f}(×0.30)"
+        bonus = 0.05 if s.total_emergency_passed > 0 and avgd < 2.0 else (0.02 if s.total_emergency_passed > 0 and avgd < 4.0 else 0.0)
+        proj = tput*0.30 + ems*0.35 + d*0.20 + eff*0.15 + bonus
+        return f"projected={proj:.3f} em={ems:.2f}(×0.35) delay={d:.2f}(avg={avgd:.1f}){bonus_str} tput={tput:.2f}(×0.30)"
 
     if task == "dynamic_scenarios":
         tput = min(tps / 2.0, 1.0)
         ems  = min(er / (1.0/15.0), 1.0)
         if s.total_emergency_passed > 0:
-            d    = max(0.0, 1.0 - (s.total_emergency_delay / s.total_emergency_passed) / 5.0)
             avgd = s.total_emergency_delay / s.total_emergency_passed
+            d    = max(0.0, 1.0 - avgd / 5.0)
         else:
             d, avgd = 0.0, float("inf")
         eff  = 1.0 / (1.0 + aw * 0.08)
         ada  = 1.0 / (1.0 + (s.total_phase_changes / steps) * 0.5)
-        proj = tput*0.25 + ems*0.30 + d*0.20 + eff*0.15 + ada*0.10
-        return f"projected={proj:.3f} em={ems:.2f}(×0.30) delay={d:.2f}(avg={avgd:.1f}) tput={tput:.2f} eff={eff:.2f} ada={ada:.2f}"
+        surge_bonus = (0.03 if s.total_vehicles_passed > steps * 1.5 else 0.0) + \
+                      (0.02 if s.total_emergency_passed > 0 and s.total_collisions == 0 else 0.0)
+        proj = tput*0.25 + ems*0.30 + d*0.20 + eff*0.15 + ada*0.10 + surge_bonus
+        surge_str = f"(BONUS+{surge_bonus:.2f}!)" if surge_bonus > 0 else f"(need {steps*1.5:.0f}veh for +0.03)"
+        return f"projected={proj:.3f} em={ems:.2f}(×0.30) delay={d:.2f}(avg={avgd:.1f}) tput={tput:.2f}{surge_str} ada={ada:.2f}"
 
     return "(unknown task)"
 
@@ -173,33 +185,47 @@ def _project_score(task: str, state: Optional[TrafficState], step: int) -> str:
 
 SYSTEM_PROMPT = """You are an expert Autonomous Traffic Signal Controller for a 4-way intersection.
 
-PHASES: 0=NS_GREEN (North-South green)  1=EW_GREEN (East-West green)  2=ALL_RED (emergency clearance)
-FLOW: each GREEN phase clears ~3 vehicles/step in that direction. ALL_RED clears 0.
+PHASES: 0=NS_GREEN (North-South clears)  1=EW_GREEN (East-West clears)  2=ALL_RED (nobody moves)
+FLOW RATE: each GREEN clears up to 3 vehicles/step from that axis. ALL_RED clears 0.
 
-REWARD PER STEP:
-  +0.30 × regular vehicles cleared
-  +12.0 × emergency vehicles cleared
-  -(urgency^1.5)×0.5 per WAITING emergency (every step it waits — urgency=6→7.4/step, urgency=8→11.3/step)
-  -0.08 × total vehicles waiting
-  -0.5 to -2.0 unnecessary phase switch (proportional to empty-queue ratio)
-  +0.05 stability bonus (no switch this step)
-  -200  gridlock collision (instant episode end!)
+STEP REWARD:
+  +0.30 × regular vehicles cleared        +12.0 × emergency cleared
+  -(urgency^1.5)×0.5 per WAITING emergency each step:
+      urgency=7→9.3/step  urgency=8→11.3/step  urgency=9→13.5/step  urgency=10→15.8/step
+  -0.08 × total vehicles waiting          +0.05 stability (no switch)
+  -0.5 to -2.0 switching to emptier side  -200 gridlock collision!
 
-GRADING WEIGHTS:
-  basic_flow:          throughput×0.60  efficiency×0.40  (+stability bonus)
-  emergency_priority:  em_rate×0.35     throughput×0.30  delay×0.20  efficiency×0.15
-  dynamic_scenarios:   em_rate×0.30     throughput×0.25  delay×0.20  efficiency×0.15  adaptability×0.10
+GRADING FORMULAS (what the judge actually scores):
+  basic_flow:
+    throughput_score = min(vehicles_per_step / 1.8, 1.0) × 0.60
+    efficiency_score = 1/(1 + avg_wait×0.1) × 0.40
+    stability_bonus  = up to +0.05 (low switch rate)
+    → STRATEGY: hold phases ≥6 steps, switch only when opposite queue 50%+ larger
 
-RULES:
-  1. Any urgency≥8 emergency → switch to that direction NOW (cost=11.3/step if you wait)
-  2. Any urgency≥6 emergency → clear before it escalates (cost=7.4/step)
-  3. basic_flow: hold each phase ≥6 steps; switch only when other direction queue is 50%+ bigger
-  4. emergency tasks: react fast, hold ≥3 steps minimum
-  5. ALL_RED only when BOTH directions have simultaneous critical emergencies
-  6. Never switch to an empty direction (full -2.0 penalty, zero gain)
-  7. Total queue >28 + held >14 steps → rotate to prevent -200 gridlock collision
+  emergency_priority:
+    em_rate_score = min(em_cleared_per_step / 0.05, 1.0) × 0.35  ← needs 1 em per 20 steps
+    throughput    = min(veh_per_step / 1.5, 1.0) × 0.30
+    delay_score   = max(0, 1 - avg_em_delay/12) × 0.20
+    BONUS: avg_em_delay < 2 steps → +0.05;  < 4 steps → +0.02
+    → STRATEGY: clear ANY emergency immediately; urgency 7-10 means massive delay cost
 
-Think step-by-step then output ONLY valid JSON on the last line: {"light_phase": 0}"""
+  dynamic_scenarios:
+    em_rate_score = min(em_cleared_per_step / 0.067, 1.0) × 0.30  ← needs 1 em per 15 steps
+    delay_score   = max(0, 1 - avg_em_delay/5) × 0.20  ← stricter!
+    throughput    = min(veh_per_step / 2.0, 1.0) × 0.25
+    efficiency × 0.15  adaptability (low switches) × 0.10
+    BONUS: throughput > 1.5 veh/step AND no collisions → up to +0.05
+    → STRATEGY: emergency first always; prevent total_queue >40 held >20 steps
+
+DECISION RULES (priority order):
+  1. BOTH directions critical emergency → phase=2 (ALL_RED)
+  2. ONE direction has emergency with higher urgency → give it green immediately
+  3. emergency_priority/dynamic: ANY emergency → clear it NOW (delay cost compounds fast)
+  4. basic_flow: hold ≥6 steps; switch if opposite queue is 50%+ bigger
+  5. Never switch to a direction with tiny queue (pay -2.0 with no gain)
+  6. total_queue>28 held>14 steps → rotate to bigger queue to avoid -200 collision
+
+Think briefly then output ONLY valid JSON on the last line: {"light_phase": 0}"""
 
 
 def _build_prompt(
