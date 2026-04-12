@@ -76,8 +76,16 @@ def _heuristic_phase(obs: TrafficObservation, task: str) -> int:
     ns_urg = max(obs.emergency_urgency[0], obs.emergency_urgency[1])
     ew_urg = max(obs.emergency_urgency[2], obs.emergency_urgency[3])
     cur    = obs.current_phase
+    ns_q   = obs.queue_lengths[0] + obs.queue_lengths[1]
+    ew_q   = obs.queue_lengths[2] + obs.queue_lengths[3]
 
-    # Critical emergency
+    # Collision risk — rotate to larger queue to drain before gridlock (-200 penalty)
+    total_q = sum(obs.queue_lengths)
+    if total_q > 28 and obs.time_in_phase > 14:
+        if cur in (0, 3): return 1 if ew_q > ns_q else 0
+        return 0 if ns_q > ew_q else 1
+
+    # Critical emergency (urgency >= 8)
     if ns_em > 0 and ns_urg >= 8 and ew_em > 0 and ew_urg >= 8:
         return 2
     if ns_em > 0 and ns_urg >= 8:
@@ -85,7 +93,7 @@ def _heuristic_phase(obs: TrafficObservation, task: str) -> int:
     if ew_em > 0 and ew_urg >= 8:
         return 1
 
-    # Moderate emergency
+    # Moderate emergency (urgency >= 5)
     if ns_em > 0 and ns_urg >= 5:
         if ew_em == 0 or ns_urg >= ew_urg:
             return 0
@@ -98,7 +106,7 @@ def _heuristic_phase(obs: TrafficObservation, task: str) -> int:
         if cur in (0, 3): return 0
         if cur in (1, 4): return 1
 
-    # Pressure
+    # Pressure ratio
     ns_p, ew_p = _compute_pressures(obs)
     ratio = 1.5 if task == "basic_flow" else 1.2
     if ns_p > ew_p * ratio: return 0
