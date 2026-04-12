@@ -3,9 +3,11 @@
 import os
 import sys
 import json
+import time
+import urllib.request
 from typing import List, Optional
 
-# Allow imports from repo root
+# Allow imports from repo root so both container-root and package contexts work
 _HERE = os.path.dirname(os.path.abspath(__file__))
 _PARENT = os.path.dirname(_HERE)
 for _p in (_HERE, _PARENT):
@@ -21,14 +23,16 @@ except ImportError:
     from client import TrafficControlEnv  # type: ignore
     from models import TrafficAction, TrafficObservation  # type: ignore
 
-# Environment variables - read per validator spec
-API_BASE_URL = os.environ["API_BASE_URL"]
-API_KEY = os.environ["API_KEY"]
-MODEL_NAME = os.getenv("MODEL_NAME", "gpt-4o-mini")
-SERVER_URL = os.getenv("SERVER_URL", "http://localhost:7860")
-SEED = 42
-MAX_TOKENS = 64
-TEMPERATURE = 0.0
+# ---------------------------------------------------------------------------
+# Environment variables — MUST be injected by the hackathon validator
+# ---------------------------------------------------------------------------
+API_BASE_URL = os.environ["API_BASE_URL"]   # e.g. the LiteLLM proxy URL
+API_KEY      = os.environ["API_KEY"]         # LiteLLM proxy API key
+MODEL_NAME   = os.getenv("MODEL_NAME", "gpt-4o-mini")
+SERVER_URL   = os.getenv("SERVER_URL", "http://localhost:7860")
+SEED         = 42
+MAX_TOKENS   = 64
+TEMPERATURE  = 0.0
 
 # ---------------------------------------------------------------------------
 # LLM Prompt
@@ -64,8 +68,6 @@ def _sanitize(s: str) -> str:
     return s.replace('"', "'").replace("\n", " ")
 
 
-
-
 def _parse_phase(raw: str) -> int:
     """Extract phase from LLM response."""
     try:
@@ -79,12 +81,12 @@ def _parse_phase(raw: str) -> int:
 
 
 def get_llm_action(client: OpenAI, obs: TrafficObservation, step: int) -> TrafficAction:
-    """Call LLM for decision."""
+    """Call LLM proxy for a traffic phase decision."""
     resp = client.chat.completions.create(
         model=MODEL_NAME,
         messages=[
             {"role": "system", "content": SYSTEM_PROMPT},
-            {"role": "user", "content": _build_prompt(obs, step)},
+            {"role": "user",   "content": _build_prompt(obs, step)},
         ],
         temperature=TEMPERATURE,
         max_tokens=MAX_TOKENS,
@@ -92,6 +94,22 @@ def get_llm_action(client: OpenAI, obs: TrafficObservation, step: int) -> Traffi
     raw = resp.choices[0].message.content.strip()
     phase = _parse_phase(raw)
     return TrafficAction(light_phase=phase)
+
+
+def _wait_for_server(url: str, timeout: int = 60) -> None:
+    """Block until the env server is healthy or timeout expires."""
+    health_url = url.rstrip("/") + "/health"
+    deadline = time.time() + timeout
+    while time.time() < deadline:
+        try:
+            with urllib.request.urlopen(health_url, timeout=3) as r:
+                if r.status == 200:
+                    return
+        except Exception:
+            pass
+        time.sleep(2)
+    # If the server never came up, log and continue anyway
+    print(f"[WARN] Server not healthy after {timeout}s — proceeding anyway", flush=True)
 
 
 def run_task(task: str, client: OpenAI) -> dict:
@@ -105,27 +123,33 @@ def run_task(task: str, client: OpenAI) -> dict:
 
     try:
         with TrafficControlEnv(base_url=SERVER_URL).sync() as env:
-            obs = env.reset(task_id=task, seed=SEED)
+            # env.reset() returns a TrafficObservation directly
+            obs: TrafficObservation = env.reset(task_id=task, seed=SEED)
 
             while not obs.done:
                 step += 1
+
+                # Call the LLM proxy — this is the call the validator monitors
                 action = get_llm_action(client, obs, step)
                 action_str = f"light_phase={action.light_phase}"
 
                 try:
-                    obs = env.step(action)
-                    reward_val = obs.reward if obs.reward is not None else 0.0
+                    # env.step() returns a StepResult; unwrap the observation
+                    result = env.step(action)
+                    obs        = result.observation   # TrafficObservation
+                    reward_val = result.reward if result.reward is not None else 0.0
                     rewards.append(reward_val)
-                    done = obs.done
+                    done       = result.done
                     last_error = None
                 except Exception as exc:
                     reward_val = 0.0
-                    done = True
+                    done       = True
                     last_error = _sanitize(str(exc))
 
                 error_str = "null" if last_error is None else f'"{last_error}"'
                 print(
-                    f'[STEP] step={step} action={action_str} reward={reward_val:.2f} done={str(done).lower()} error={error_str}',
+                    f'[STEP] step={step} action={action_str} '
+                    f'reward={reward_val:.2f} done={str(done).lower()} error={error_str}',
                     flush=True,
                 )
 
@@ -134,20 +158,20 @@ def run_task(task: str, client: OpenAI) -> dict:
 
     except Exception as exc:
         last_error = _sanitize(str(exc))
+        print(f"[WARN] Episode error: {last_error}", flush=True)
 
-    success = done and last_error is None
-    rewards_str = ",".join(f"{r:.2f}" for r in rewards)
-    
-    # Calculate normalized score [0, 1]
+    success      = done and last_error is None
+    rewards_str  = ",".join(f"{r:.2f}" for r in rewards) if rewards else "0.00"
     total_reward = sum(rewards)
-    max_possible = step * 10.0  # Approximate max per step
-    score = min(1.0, max(0.0, total_reward / max_possible)) if max_possible > 0 else 0.0
-    
+    max_possible = step * 10.0
+    score        = min(1.0, max(0.0, total_reward / max_possible)) if max_possible > 0 else 0.0
+
     print(
-        f'[END] success={str(success).lower()} steps={step} score={score:.2f} rewards={rewards_str}',
+        f'[END] success={str(success).lower()} steps={step} '
+        f'score={score:.2f} rewards={rewards_str}',
         flush=True,
     )
-    
+
     return {"success": success, "steps": step, "rewards": rewards}
 
 
@@ -157,10 +181,13 @@ def run_task(task: str, client: OpenAI) -> dict:
 
 def main():
     """Main entry point."""
-    # Initialize OpenAI client with environment variables
+    # Wait for the env server to be ready before starting inference
+    _wait_for_server(SERVER_URL)
+
+    # Initialize OpenAI client with hackathon-injected proxy credentials
     client = OpenAI(
-        base_url=os.environ["API_BASE_URL"],
-        api_key=os.environ["API_KEY"]
+        base_url=API_BASE_URL,
+        api_key=API_KEY,
     )
 
     tasks = ["basic_flow", "emergency_priority", "dynamic_scenarios"]
