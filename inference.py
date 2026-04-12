@@ -170,11 +170,31 @@ def run_task(task: str, client: OpenAI) -> dict:
 
 def main():
     """Main entry point."""
+    # Debug: Log environment variable status
+    print(f"[INIT] API_BASE_URL present: {bool(API_BASE_URL)}", flush=True)
+    print(f"[INIT] API_KEY present: {bool(API_KEY)}", flush=True)
+    print(f"[INIT] MODEL_NAME: {MODEL_NAME}", flush=True)
+    print(f"[INIT] SERVER_URL: {SERVER_URL}", flush=True)
+    
     # Initialize OpenAI client per spec
     client = OpenAI(
         base_url=API_BASE_URL,
         api_key=API_KEY
     )
+    print(f"[INIT] OpenAI client created with base_url={API_BASE_URL}", flush=True)
+    
+    # IMMEDIATE TEST: Make an API call right now to verify proxy works
+    print(f"[INIT] Making immediate test API call...", flush=True)
+    try:
+        test_resp = client.chat.completions.create(
+            model=MODEL_NAME,
+            messages=[{"role": "user", "content": "test"}],
+            max_tokens=5
+        )
+        print(f"[INIT] Test API call SUCCESS - response: {test_resp.choices[0].message.content[:20]}", flush=True)
+    except Exception as e:
+        print(f"[INIT] Test API call FAILED: {type(e).__name__}: {str(e)[:100]}", flush=True)
+        raise
 
     tasks = ["basic_flow", "emergency_priority", "dynamic_scenarios"]
     for task in tasks:
