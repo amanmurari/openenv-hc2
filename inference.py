@@ -123,10 +123,12 @@ def run_task(task: str, client: OpenAI) -> dict:
 
     try:
         with TrafficControlEnv(base_url=SERVER_URL).sync() as env:
-            # env.reset() returns a TrafficObservation directly
-            obs: TrafficObservation = env.reset(task_id=task, seed=SEED)
+            # env.reset() returns a StepResult; unwrap the observation
+            reset_result = env.reset(task_id=task, seed=SEED)
+            obs: TrafficObservation = reset_result.observation
+            done = reset_result.done
 
-            while not obs.done:
+            while not done:
                 step += 1
 
                 # Call the LLM proxy — this is the call the validator monitors
