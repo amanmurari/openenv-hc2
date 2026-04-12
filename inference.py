@@ -34,12 +34,12 @@ except ImportError:
 # Configuration - EXACTLY per spec: defaults for API_BASE_URL and MODEL_NAME
 # ---------------------------------------------------------------------------
 
-API_BASE_URL = os.getenv("API_BASE_URL", "https://api.openai.com/v1")
-MODEL_NAME = os.getenv("MODEL_NAME", "gpt-4.1-mini")
-HF_TOKEN = os.getenv("HF_TOKEN")
+API_BASE_URL = os.getenv("API_BASE_URL", "https://router.huggingface.co/v1")
+MODEL_NAME = os.getenv("MODEL_NAME", "Qwen/Qwen2.5-72B-Instruct")
+API_KEY = os.getenv("HF_TOKEN") or os.getenv("API_KEY")
 
-if HF_TOKEN is None:
-    raise ValueError("HF_TOKEN environment variable is required")
+if API_KEY is None:
+    raise ValueError("HF_TOKEN or API_KEY environment variable is required")
 
 SERVER_URL = os.getenv("SERVER_URL", "http://localhost:7860")
 SEED = 42
@@ -154,8 +154,13 @@ def run_task(task: str, client: OpenAI) -> dict:
     success = done and last_error is None
     rewards_str = ",".join(f"{r:.2f}" for r in rewards)
     
+    # Calculate normalized score [0, 1]
+    total_reward = sum(rewards)
+    max_possible = step * 10.0  # Approximate max per step
+    score = min(1.0, max(0.0, total_reward / max_possible)) if max_possible > 0 else 0.0
+    
     print(
-        f'[END] success={str(success).lower()} steps={step} rewards={rewards_str}',
+        f'[END] success={str(success).lower()} steps={step} score={score:.2f} rewards={rewards_str}',
         flush=True,
     )
     
@@ -171,7 +176,7 @@ def main():
     # Initialize OpenAI client per spec
     client = OpenAI(
         base_url=API_BASE_URL,
-        api_key=HF_TOKEN
+        api_key=API_KEY
     )
 
     tasks = ["basic_flow", "emergency_priority", "dynamic_scenarios"]
